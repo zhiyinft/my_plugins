@@ -2,5 +2,13 @@
   "plugins/fanyi": {
     "repo": "https://github.com/JrCx7scC/claude-code-fanyi.git",
     "branch": "main"
+  },
+  "plugins/prompt-rail": {
+    "repo": "https://github.com/oikon48/prompt-rail.git",
+    "branch": "main",
+    "path": "plugins/prompt-rail",
+    "files": [
+      "LICENSE"
+    ]
   }
 }
