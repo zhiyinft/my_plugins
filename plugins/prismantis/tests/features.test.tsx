@@ -1208,7 +1208,8 @@ test('a shell edit with output keeps the engine output, without the engine diff,
     const ui = await $.ui.mount(editResult(surface, 'Bash', bashEdit('patched 2 files')))
     expect(await ui.find({ type: 'Text', text: /^engine$/ })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^\+2$/ })).toBeDefined()
-    expect(seen).toEqual([{ stdout: 'patched 2 files', stderr: '', interrupted: false }])
+    // The row as it came, asked first (see beneath.ts), then the output without the engine's diff.
+    expect(seen.slice(1)).toEqual([{ stdout: 'patched 2 files', stderr: '', interrupted: false }])
     expect(await ui.find({ type: 'Text', text: /^ {5}$/ })).toBeDefined()
     await ui.unmount()
   }

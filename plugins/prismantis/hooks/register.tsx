@@ -1,6 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptOrigin, Register, RenderElement, RenderSurface } from 'claude-code'
 
+import { inPlaceOfEngine, isDrawnAway } from './beneath'
 import { clockText, endedAt, promptKey, sentAt, withRecord } from './clock'
 import type { Formula } from './latex'
 import { LATEX_DPR, LATEX_FONT_PX, fitsImage, keepFormulas, mathOf, padFor, pickFormula, pngSize, ratexColor, renderedOf } from './latex'
@@ -289,28 +290,39 @@ export const register: Register = (on, options) => {
   }
   let firstEdit: string | undefined
   if (options.toolRows !== false) {
+    // Each row hook asks the mods beneath first (see beneath.ts): a row one of
+    // them drew away stays away, and one it wrapped keeps the wrapping. Where
+    // nothing answers (a test with no stand-in for the engine), as before.
     on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
-      await locate($, style)
-      for (const call of e.props.calls) noteCommand(call.tool_use_id, call.tool, call.input)
-      if (quiet) for (const call of e.props.calls) if (call.tool_use_id && isReadOnlyCall(call.tool, call.input)) rememberCall(readOnlyCalls, call.tool_use_id)
       if (e.props.isExpanded) {
         for (const call of e.props.calls) if (call.tool_use_id) rememberCall(expandedCalls, call.tool_use_id, 500)
         return next(e)
       }
-      return renderToolGroup($.ui.resolve(e), fit(e.viewport), e.props.calls, e.props.isActive, e.viewport?.columns)
+      const beneath = await next(e).catch(() => undefined)
+      if (isDrawnAway(beneath)) return beneath
+      await locate($, style)
+      for (const call of e.props.calls) noteCommand(call.tool_use_id, call.tool, call.input)
+      if (quiet) for (const call of e.props.calls) if (call.tool_use_id && isReadOnlyCall(call.tool, call.input)) rememberCall(readOnlyCalls, call.tool_use_id)
+      return inPlaceOfEngine(beneath, renderToolGroup($.ui.resolve(e), fit(e.viewport), e.props.calls, e.props.isActive, e.viewport?.columns))
     })
     on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+      const beneath = await next(e).catch(() => undefined)
+      if (isDrawnAway(beneath)) return beneath
       await locate($, style)
       noteCommand(e.props.tool_use_id, e.props.tool, e.props.input)
       if (quiet && isReadOnlyCall(e.props.tool, e.props.input)) rememberCall(readOnlyCalls, e.props.tool_use_id)
-      if (!expandedCalls.has(e.props.tool_use_id)) return renderToolRow($.ui.resolve(e), fit(e.viewport), e.props, e.viewport?.columns)
+      if (!expandedCalls.has(e.props.tool_use_id)) return inPlaceOfEngine(beneath, renderToolRow($.ui.resolve(e), fit(e.viewport), e.props, e.viewport?.columns))
       const shell = e.props.tool === 'Bash' || e.props.tool === 'PowerShell'
-      return shell && typeof e.props.output !== 'string' ? renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props) : next(e)
+      return shell && typeof e.props.output !== 'string' ? inPlaceOfEngine(beneath, renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props)) : (beneath ?? next(e))
     })
     on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+      const beneath = await next(e).catch(() => undefined)
+      if (isDrawnAway(beneath)) return beneath
+      const asIs = () => beneath ?? next(e)
       if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) {
         const el = $.ui.resolve(e)
-        return renderDiffCard(el, fit(e.viewport), e.props.output, folder($, el, await read($, unfolded)), e.props.tool_use_id) ?? next(e)
+        const card = renderDiffCard(el, fit(e.viewport), e.props.output, folder($, el, await read($, unfolded)), e.props.tool_use_id)
+        return card ? inPlaceOfEngine(beneath, card) : asIs()
       }
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
@@ -323,15 +335,18 @@ export const register: Register = (on, options) => {
         const cards = renderBashEdits(el, fit(e.viewport), edits, folder($, el, await read($, unfolded)), e.props.tool_use_id, above !== null, notes)
         return above === null ? cards : <el.Box flexDirection="column">{above}{cards}</el.Box>
       }
-      if (!quiet) return next(e)
+      if (!quiet) return asIs()
       await locate($, style)
       const el = $.ui.resolve(e)
       const shell = e.props.tool === 'Bash' || e.props.tool === 'PowerShell'
       const out = (e.props.output ?? {}) as Record<string, unknown>
-      if (shell && (out.backgroundTaskId || out.isImage || out.interrupted)) return next(e)
-      if (e.props.isErrored) return renderFailure(el, fit(e.viewport), e.props.output) ?? next(e)
+      if (shell && (out.backgroundTaskId || out.isImage || out.interrupted)) return asIs()
+      if (e.props.isErrored) {
+        const failure = renderFailure(el, fit(e.viewport), e.props.output)
+        return failure ? inPlaceOfEngine(beneath, failure) : asIs()
+      }
       if (readOnlyCalls.has(e.props.tool_use_id)) return <el.Box />
-      return shell ? renderShellResult(el, fit(e.viewport), e.props.output) : next(e)
+      return shell ? inPlaceOfEngine(beneath, renderShellResult(el, fit(e.viewport), e.props.output)) : asIs()
     })
   }
 
@@ -423,12 +438,16 @@ export const register: Register = (on, options) => {
     const at = style.clock === 'off' ? undefined : sentAt(await read($, sent), e.props.text, await firstDrawn($, e.requestId))
     const time = at === undefined ? undefined : clockText(at, await $.clock.now(), style.clock)
     if (style.promptStyle === 'off') return time === undefined ? next(e) : next({ ...e, props: { ...e.props, text: `[${time}] ${e.props.text}` } })
-    return renderUserPrompt($.ui.resolve(e), fit(e.viewport), e.props.text, columnsOf(e.viewport), time)
+    const beneath = await next(e).catch(() => undefined)
+    if (isDrawnAway(beneath)) return beneath
+    return inPlaceOfEngine(beneath, renderUserPrompt($.ui.resolve(e), fit(e.viewport), e.props.text, columnsOf(e.viewport), time))
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const blocks = parseCached(e.props.text)
     if (blocks.length === 0) return next(e)
+    const beneath = await next(e).catch(() => undefined)
+    if (isDrawnAway(beneath)) return beneath
     const el = $.ui.resolve(e)
     const { Box, Text } = el
     const narration = style.toolStyle === 'tree-bold' && blocks.length === 1 && blocks[0]!.kind === 'paragraph'
@@ -436,7 +455,8 @@ export const register: Register = (on, options) => {
     const reach = await linkReach($, probes)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
-    return (
+    return inPlaceOfEngine(
+      beneath,
       <Box key="msg" flexDirection="row">
         <Box width={2} flexShrink={0}>
           <Text color={style.theme.accent}>{e.props.isFirstOfReply ? '●' : ' '}</Text>
@@ -444,7 +464,7 @@ export const register: Register = (on, options) => {
         <Box flexDirection="column" rowGap={1} flexGrow={1}>
           {drawMarkdown($, el, narration ? { ...surfaceStyle, narration } : surfaceStyle, blocks, columnsOf(e.viewport), math, blocks.length > 1 || hasRtl(e.props.text) ? e.props.text : undefined, open, { id: e.requestId, press: reach.marks })}
         </Box>
-      </Box>
+      </Box>,
     )
   })
 

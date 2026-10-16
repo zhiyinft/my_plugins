@@ -338,6 +338,12 @@ function streamOnce($, text, key, gen) {
   })
 }
 
+// A row a mod beneath drew away, an empty Box: qa-split draws that for the tool rows and the notes
+// between tool calls it moves to its own pane. fanyi leaves such a row as drawn, untranslated.
+function isDrawnAway(node) {
+  return !!node && node.type === 'Box' && !(node.children && node.children.length)
+}
+
 // Marks a reply block as already in the user's language: no box, and saved so it isn't checked again
 function skipReply($, key) {
   remember(replies, key, { text: '', done: true, skipped: true })
@@ -974,6 +980,8 @@ export function register(on, options = {}) {
   // under it that shows the original.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
+    const drawn = await next(e)
+    if (isDrawnAway(drawn)) return drawn
     const key = e.props.text.trim()
     let entry = replies.get(key)
     // A block drawn with no translation in memory: one stored while this module ran whose drawn
@@ -981,14 +989,14 @@ export function register(on, options = {}) {
     // failed, translated; or a block of a resumed or restarted conversation's history, translated
     // as the "On resume" setting says. A saved translation is drawn either way.
     if (!entry && key) entry = await entryFor($, e.props.text, !isLive(key))
-    if (!entry || entry.skipped) return next(e)
+    if (!entry || entry.skipped) return drawn
     const { Box, Text, Button, Markdown } = $.ui.resolve(e)
     const s = await getSettings($)
     if (s.layout === 'translated') {
       // Until some of it has arrived, the original stands in for the translation
       if (!entry.text) {
         const waiting = entry.retrying ? 'Translating · retrying…' : 'Translating…'
-        return Box({ flexDirection: 'column', children: [await next(e), Box({ marginLeft: 2, children: [Text({ dimColor: true, italic: true, children: waiting })] })] })
+        return Box({ flexDirection: 'column', children: [drawn, Box({ marginLeft: 2, children: [Text({ dimColor: true, italic: true, children: waiting })] })] })
       }
       // The translation drawn as the reply itself, then a small button that shows the original under it
       const open = revealed.has(key)
@@ -1009,7 +1017,6 @@ export function register(on, options = {}) {
         ],
       })
     }
-    const drawn = await next(e)
     const state = entry.done ? '' : entry.retrying ? ' · retrying…' : ' · streaming…'
     const body = entry.text
       ? Markdown({ text: entry.text })
@@ -1077,8 +1084,11 @@ export function register(on, options = {}) {
       return next(t ? { ...e, props: { ...e.props, input: t.input, ...(e.props.output !== undefined && { output: t.output }) } } : e)
     }
     if (!input || typeof input !== 'object' || typeof input.description !== 'string') return next(e)
+    // Asked first, so a row drawn away costs no translation
+    const drawn = await next(e)
+    if (isDrawnAway(drawn)) return drawn
     const [translated] = await translations($, [input.description])
-    if (!translated) return next(e)
+    if (!translated) return drawn
     return next({ ...e, props: { ...e.props, input: { ...input, description: bilingual(input.description, translated) } } })
   })
 

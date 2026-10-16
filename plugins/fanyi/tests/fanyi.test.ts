@@ -462,6 +462,22 @@ test('a tool row whose title is its description shows the translation under it',
   expect(calls.filter((c) => c === 'translate').length).toBe(before)
 })
 
+test('a row a mod beneath drew away (qa-split moves it to its pane) stays away: no frame, no translation', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on)
+  store(on)
+  resumed(on)
+  // Stands in for a mod beneath fanyi that takes the row off the transcript
+  on('ui.render', async ($: any, e: any) => $.ui.resolve(e).Box({}))
+  const reply: any = await draw($, 'The last reply.')
+  expect(reply.type).toBe('Box')
+  expect(reply.children ?? []).toEqual([])
+  const tool: any = await $.ui.render({ component: 'ToolUse', surface: 'terminal', props: { tool_use_id: 'toolu_1', tool: 'Bash', input: { command: 'ls', description: 'List the files' }, isRunning: false, isErrored: false, isInterrupted: false } } as any)
+  expect(tool.children ?? []).toEqual([])
+  await clock.advance(1000)
+  expect(calls.filter((c) => c === 'translate' || c === 'translate_start')).toEqual([])
+})
+
 test('the row of an answered question draws each question bilingual, its answers re-keyed to match', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   translator(on)
