@@ -4,5 +4,11 @@
   "owner": {
     "name": "zhiyinft"
   },
-  "plugins": []
+  "plugins": [
+    {
+      "name": "fanyi",
+      "source": "./plugins/fanyi",
+      "description": "Write to Claude Code in your own language while Claude works in English, with streamed translations of every reply."
+    }
+  ]
 }

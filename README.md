@@ -6,6 +6,7 @@ My customized Claude Code plugins, mods and skills, published as one plugin mark
 
 | Plugin | What it does | Origin |
 | :- | :- | :- |
+| [fanyi](plugins/fanyi) | Mod: write to Claude in your own language, get streamed translations of every reply | Fork of [JrCx7scC/claude-code-fanyi](https://github.com/JrCx7scC/claude-code-fanyi) `main` |
 
 ## Install
 
@@ -46,6 +47,12 @@ git subtree pull --prefix=plugins/<name> <upstream-git-url> <branch> --squash
 ```
 
 Local edits are merged with upstream's; conflicts are resolved like any merge. Always pass `--squash` for a prefix that was added with it.
+
+For fanyi:
+
+```bash
+git subtree pull --prefix=plugins/fanyi https://github.com/JrCx7scC/claude-code-fanyi.git main --squash
+```
 
 ## Checking
 
