@@ -79,7 +79,8 @@ function importTree(commit, { path, files = [], exclude = [] }) {
   const env = { ...process.env, GIT_INDEX_FILE: index }
   try {
     git(['read-tree', source], { env })
-    if (exclude.length) git(['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', ...exclude], { env })
+    // -f: the index is ours alone, so skip rm's checks against the work tree
+    if (exclude.length) git(['rm', '-r', '-q', '-f', '--cached', '--ignore-unmatch', '--', ...exclude], { env })
     for (const file of files) {
       const [mode, , blob] = git(['ls-tree', commit, file]).split(/\s+/)
       if (!blob) fail(`${file} not found upstream`)
