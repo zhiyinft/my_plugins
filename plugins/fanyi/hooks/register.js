@@ -100,8 +100,8 @@ const DEFAULT_SETTINGS = {
   engine: 'api',
   language: 'zh-Hans',
   detection: 'device',
-  base_url: 'https://opencode.ai/zen/go/v1',
-  model: 'deepseek-v4.1-flash',
+  base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
+  model: 'glm-5.3',
 }
 let settings = null
 // Bumped when the engine or language changes, so translations still running for the old ones

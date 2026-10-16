@@ -22,8 +22,8 @@ const DEFAULTS = {
   engine: 'api',
   language: 'zh-Hans',
   detection: 'device',
-  base_url: process.env.FANYI_BASE_URL || 'https://opencode.ai/zen/go/v1',
-  model: process.env.FANYI_MODEL || 'deepseek-v4.1-flash',
+  base_url: process.env.FANYI_BASE_URL || 'https://open.bigmodel.cn/api/coding/paas/v4',
+  model: process.env.FANYI_MODEL || 'glm-5.3',
 }
 const PLUGIN_ROOT = new URL('..', import.meta.url).pathname
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || join(tmpdir(), 'fanyi')

@@ -100,7 +100,7 @@ test('a resumed session draws a block translated before from the store, without 
   const clock = mock.clock(on)
   const calls = translator(on)
   const text = 'A reply block translated in an earlier session.'
-  store(on, { 'translations:api:deepseek-v4.1-flash:zh-Hans': { v: 1, replies: [[blockKey(text), '早先的译文']], prompts: [['Translate me', '翻译我']] } })
+  store(on, { 'translations:api:glm-5.3:zh-Hans': { v: 1, replies: [[blockKey(text), '早先的译文']], prompts: [['Translate me', '翻译我']] } })
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
   on('ui.render', { component: 'UserMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
   expect(shows(await draw($, text), '早先的译文')).toBe(true)
@@ -119,7 +119,7 @@ test('a finished translation is saved to the store, so a later session does not 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
   await draw($, text)
   await clock.advance(5000)
-  const saved = kept.get('translations:api:deepseek-v4.1-flash:zh-Hans') as any
+  const saved = kept.get('translations:api:glm-5.3:zh-Hans') as any
   expect(saved?.v).toBe(1)
   expect(new Map(saved.replies).get(blockKey(text))).toBe('译文：ok')
 })
@@ -176,7 +176,7 @@ test('a reply already in the user\'s language gets no box, and that is saved', {
   await draw($, text)
   await clock.advance(5000)
   expect(shows(await draw($, text), 'Translat')).toBe(false)
-  const saved = kept.get('translations:api:deepseek-v4.1-flash:zh-Hans') as any
+  const saved = kept.get('translations:api:glm-5.3:zh-Hans') as any
   expect(new Map(saved.replies).get(blockKey(text))).toBe('')
 })
 

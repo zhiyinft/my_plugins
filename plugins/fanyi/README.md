@@ -38,7 +38,7 @@ The pane applies each choice as soon as it's picked, and keeps it across session
 | Engine | **API**: your configured model, streamed. **Apple on-device**: Apple's Translation framework, so nothing leaves your Mac and a reply takes under a second, but technical terms come out worse. It needs the language packs in System Settings → General → Language & Region → Translation Languages. |
 | Your language | The language prompts are translated from and replies into. Changing it starts translations over in the new language. |
 | Language detection | **On this Mac**: NaturalLanguage tells which language a text is in, with no API call. **Ask the model**: the API model decides, at the cost of a short call. |
-| API host | Base URL of any OpenAI-compatible Chat Completions API, without `/chat/completions`. Default `https://opencode.ai/zen/go/v1`. |
+| API host | Base URL of any OpenAI-compatible Chat Completions API, without `/chat/completions`. Default `https://open.bigmodel.cn/api/coding/paas/v4`. |
 | API key | Paste it and press Enter. The pane shows only its last four characters. It's kept in the macOS Keychain, or in a file only you can read on other systems. Submit an empty key to remove it. |
 | Model | Picked from the list the API returns from `/models`, with `↻ Refresh` to fetch it again. For an API that lists no models, type the id instead. |
 
@@ -47,8 +47,8 @@ The plugin's options, set with `/plugin configure fanyi@claude-code-fanyi`, are 
 | Option | Default | What it does |
 | :- | :- | :- |
 | `api_key` | (none) | API key, used when none was entered in the pane. Stored in your system's secure credential store. |
-| `base_url` | `https://opencode.ai/zen/go/v1` | API host until you change it in the pane |
-| `model` | `deepseek-v4.1-flash` | Model until you pick another in the pane |
+| `base_url` | `https://open.bigmodel.cn/api/coding/paas/v4` | API host until you change it in the pane |
+| `model` | `glm-5.3` | Model until you pick another in the pane |
 | `disable_thinking` | `true` | Sends `thinking: { type: "disabled" }`. On DeepSeek this cuts time to first token from 6–15 s to about 1.5 s. A model that only runs with reasoning on is detected on its first refusal and sent requests without the field. |
 
 Every API request carries a `claude-code-fanyi/<version>` User-Agent and an `x-opencode-session` header set to the Claude Code session id. OpenCode Go requires both, and other providers ignore them.

@@ -25,13 +25,13 @@
       "type": "string",
       "title": "Base URL",
       "description": "Initial API host; change it in the settings pane",
-      "default": "https://opencode.ai/zen/go/v1"
+      "default": "https://open.bigmodel.cn/api/coding/paas/v4"
     },
     "model": {
       "type": "string",
       "title": "Translation model",
       "description": "Initial model id; pick another from the list in the settings pane",
-      "default": "deepseek-v4.1-flash"
+      "default": "glm-5.3"
     },
     "disable_thinking": {
       "type": "boolean",
