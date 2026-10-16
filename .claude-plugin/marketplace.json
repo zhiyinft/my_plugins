@@ -9,6 +9,11 @@
       "name": "fanyi",
       "source": "./plugins/fanyi",
       "description": "Write to Claude Code in your own language while Claude works in English, with streamed translations of every reply."
+    },
+    {
+      "name": "prompt-rail",
+      "source": "./plugins/prompt-rail",
+      "description": "A rail of your session's prompts beside the transcript or above the prompt; hover to read one, click to jump to it."
     }
   ]
 }

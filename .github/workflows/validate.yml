@@ -1,0 +1,33 @@
+name: Validate
+
+# Installs auto-update from main, so a broken push reaches them: this flags it.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  plugins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code@latest
+      - run: claude --version
+      - name: Validate the marketplace
+        run: claude plugin validate .
+      - name: Validate and test each plugin
+        run: |
+          for dir in plugins/*/; do
+            echo "::group::$dir"
+            claude plugin validate "$dir"
+            if [ -f "$dir/hooks/hooks.json" ]; then claude plugin test "$dir"; fi
+            echo "::endgroup::"
+          done
