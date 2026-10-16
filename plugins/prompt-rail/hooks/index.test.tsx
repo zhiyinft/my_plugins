@@ -372,9 +372,10 @@ const world = (on: any, initial: Record<string, unknown> = {}, transcript = TRAN
     return { value: undefined }
   })
   // The engine resolves a path that is not absolute on its own host against
-  // the working directory, as a Windows path is on Linux: the end still names
-  // the transcript.
-  const isTranscript = (path: string) => path === disk.path || path.replace(/\\/g, '/').endsWith(disk.path)
+  // the working directory, as a Windows path is on Linux and a POSIX one on
+  // Windows, in that host's separators: the end still names the transcript.
+  const slashed = (path: string) => path.replace(/\\/g, '/')
+  const isTranscript = (path: string) => path === disk.path || slashed(path).endsWith(slashed(disk.path))
   on('fs.read', ($: any, e: any) => {
     disk.reads++
     if (bytes(disk.transcript).length > READ_CAP) return { deny: 'over 4 MiB' }
