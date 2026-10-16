@@ -1,0 +1,8 @@
+{
+  "name": "my-plugins",
+  "description": "zhiyinft's customized Claude Code plugins, mods and skills",
+  "owner": {
+    "name": "zhiyinft"
+  },
+  "plugins": []
+}

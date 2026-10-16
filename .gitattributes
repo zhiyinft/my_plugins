@@ -1,0 +1,5 @@
+# Plugins ship shell/node scripts that break with CRLF; keep LF everywhere
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary
