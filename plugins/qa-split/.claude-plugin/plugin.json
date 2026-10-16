@@ -1,0 +1,16 @@
+{
+  "name": "qa-split",
+  "version": "1.0.0",
+  "description": "Two panels: your prompts and Claude's answers in the transcript, the work behind each answer (tool calls, notes between them, thinking) in a Details pane beside it that follows your scrolling.",
+  "author": {
+    "name": "zhiyinft"
+  },
+  "keywords": [
+    "mod",
+    "transcript",
+    "pane",
+    "tool-calls",
+    "function-hooks"
+  ],
+  "types": "./types/index.d.ts"
+}

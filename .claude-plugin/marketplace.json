@@ -19,6 +19,11 @@
       "name": "prismantis",
       "source": "./plugins/prismantis",
       "description": "Colorful, themeable rendering for Claude Code replies: tables, code, diagrams, charts and tool rows, with copy buttons."
+    },
+    {
+      "name": "qa-split",
+      "source": "./plugins/qa-split",
+      "description": "Your prompts and Claude's answers in the transcript; tool calls, notes and thinking in a Details pane beside it that follows your scrolling."
     }
   ]
 }

@@ -7,6 +7,7 @@ My Claude Code plugins and mods, as the marketplace `my-plugins`. Installs auto-
 | fanyi | [JrCx7scC/claude-code-fanyi](https://github.com/JrCx7scC/claude-code-fanyi) |
 | prompt-rail | [oikon48/prompt-rail](https://github.com/oikon48/prompt-rail) |
 | prismantis | [NahumLitvin/prismantis](https://github.com/NahumLitvin/prismantis) |
+| qa-split | none: written here |
 
 ## Setup on a machine
 
