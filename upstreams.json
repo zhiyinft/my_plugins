@@ -10,5 +10,24 @@
     "files": [
       "LICENSE"
     ]
+  },
+  "plugins/prismantis": {
+    "repo": "https://github.com/NahumLitvin/prismantis.git",
+    "branch": "main",
+    "exclude": [
+      "docs",
+      ":!docs/THIRD_PARTY_NOTICES.md",
+      "README.md",
+      "AGENTS.md",
+      "tsconfig.json",
+      ".claude",
+      ".agents",
+      ".codex-plugin",
+      "codex",
+      ".github",
+      "scripts",
+      "tests/snapshots",
+      ".claude-plugin/marketplace.json"
+    ]
   }
 }
