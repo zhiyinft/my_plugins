@@ -2,13 +2,14 @@
 //
 // - A prompt in your language is translated to English before Claude reads it.
 // - Each text block of Claude's reply that isn't already in your language gets a streamed
-//   translation, drawn with the original in one frame. It's display-only: the stored
+//   translation, drawn as the layout setting says: with the original in one frame, in a box
+//   under it, or in its place with the original behind a button. It's display-only: the stored
 //   conversation stays English.
 // - A resumed or restarted conversation's history is translated as the "On resume" setting says:
 //   by default only its last reply; a translation saved earlier is drawn either way.
 // - Whether a text needs translating is decided by the translator server: by script for a
 //   language not written in Latin script, by the model otherwise.
-// - Settings (on/off, engine, language, detection, on resume) live in the plugin's store and are changed
+// - Settings (on/off, engine, language, layout, detection, on resume) live in the plugin's store and are changed
 //   from a settings pane (the ⚙ beside the toggle above the prompt, or /fanyi settings).
 //
 // Translation runs in the plugin's own MCP server (mcp/translator.mjs), so the mod
@@ -27,6 +28,8 @@ const replies = new Map()
 // Trimmed texts of the reply blocks stored while this module ran: always translated. Any other
 // block drawn is a resumed or restarted conversation's history.
 const live = new Map()
+// Trimmed texts of the reply blocks whose original is shown, in the 'translated' layout
+const revealed = new Map()
 // English prompt sent to Claude → what the user typed
 const prompts = new Map()
 
@@ -109,6 +112,10 @@ const DEFAULT_SETTINGS = {
   detection: 'device',
   // Which replies of a resumed conversation's history are translated: 'last', 'all' or 'none'
   history: 'last',
+  // How a reply's translation is drawn: 'frame' (original and translation in one frame),
+  // 'below' (a box under the reply) or 'translated' (the translation in the reply's place, the
+  // original behind a button)
+  layout: 'frame',
   base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
   model: 'glm-5.3',
 }
@@ -649,29 +656,39 @@ async function drawnAnswer($, value) {
 
 // The settings pane, and what it offers
 const PANE = 'fanyi-settings'
-// [tag, name, the word for "translation" a reply's frame shows]
+// [tag, name, the word for "translation" a reply's frame shows, the word for "original" on the
+// button that shows it]
 const LANGUAGES = [
-  ['zh-Hans', '简体中文', '译文'],
-  ['zh-Hant', '繁體中文', '譯文'],
-  ['ja', '日本語', '訳文'],
-  ['ko', '한국어', '번역'],
-  ['es', 'Español', 'Traducción'],
-  ['fr', 'Français', 'Traduction'],
-  ['de', 'Deutsch', 'Übersetzung'],
-  ['pt-BR', 'Português (Brasil)', 'Tradução'],
-  ['it', 'Italiano', 'Traduzione'],
-  ['ru', 'Русский', 'Перевод'],
-  ['uk', 'Українська', 'Переклад'],
-  ['pl', 'Polski', 'Tłumaczenie'],
-  ['nl', 'Nederlands', 'Vertaling'],
-  ['tr', 'Türkçe', 'Çeviri'],
-  ['vi', 'Tiếng Việt', 'Bản dịch'],
-  ['id', 'Bahasa Indonesia', 'Terjemahan'],
-  ['th', 'ไทย', 'คำแปล'],
-  ['hi', 'हिन्दी', 'अनुवाद'],
-  ['ar', 'العربية', 'الترجمة'],
+  ['zh-Hans', '简体中文', '译文', '原文'],
+  ['zh-Hant', '繁體中文', '譯文', '原文'],
+  ['ja', '日本語', '訳文', '原文'],
+  ['ko', '한국어', '번역', '원문'],
+  ['es', 'Español', 'Traducción', 'Original'],
+  ['fr', 'Français', 'Traduction', 'Original'],
+  ['de', 'Deutsch', 'Übersetzung', 'Original'],
+  ['pt-BR', 'Português (Brasil)', 'Tradução', 'Original'],
+  ['it', 'Italiano', 'Traduzione', 'Originale'],
+  ['ru', 'Русский', 'Перевод', 'Оригинал'],
+  ['uk', 'Українська', 'Переклад', 'Оригінал'],
+  ['pl', 'Polski', 'Tłumaczenie', 'Oryginał'],
+  ['nl', 'Nederlands', 'Vertaling', 'Origineel'],
+  ['tr', 'Türkçe', 'Çeviri', 'Orijinal'],
+  ['vi', 'Tiếng Việt', 'Bản dịch', 'Bản gốc'],
+  ['id', 'Bahasa Indonesia', 'Terjemahan', 'Asli'],
+  ['th', 'ไทย', 'คำแปล', 'ต้นฉบับ'],
+  ['hi', 'हिन्दी', 'अनुवाद', 'मूल'],
+  ['ar', 'العربية', 'الترجمة', 'الأصل'],
 ]
-const translationLabel = (language) => (LANGUAGES.find(([tag]) => tag === language) || [])[2] || 'Translation'
+const languageWord = (language, i, fallback) => (LANGUAGES.find(([tag]) => tag === language) || [])[i] || fallback
+const translationLabel = (language) => languageWord(language, 2, 'Translation')
+const originalLabel = (language) => languageWord(language, 3, 'Original')
+
+// Shows or hides a reply block's original, in the 'translated' layout
+function toggleOriginal($, key) {
+  if (revealed.has(key)) revealed.delete(key)
+  else remember(revealed, key, true)
+  $.ui.invalidate('ui.render')
+}
 // Whether Apple's on-device engine can run here: null until the translator has been asked
 let appleCaps = null
 // The API key's state, { isSet, source, hint }: null until asked
@@ -738,7 +755,7 @@ async function openSettings($) {
   if (!appleCaps) $.clock.after(0, () => loadCapabilities($))
   $.clock.after(0, () => loadKeyStatus($))
   if (!modelList || modelList.error) $.clock.after(0, () => loadModels($))
-  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 23, columns: 64 })
+  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 24, columns: 64 })
 }
 
 // Switches the engine, refusing Apple's when this machine can't run it
@@ -880,6 +897,17 @@ export function register(on, options = {}) {
           onSelect: (v) => updateSettings($, { language: v }),
         }),
         Select({
+          key: 'fanyi-layout',
+          label: 'Layout',
+          value: s.layout,
+          options: [
+            { value: 'frame', label: 'Original and translation in one frame' },
+            { value: 'below', label: 'Translation in a box below' },
+            { value: 'translated', label: 'Translation only, original behind a button' },
+          ],
+          onSelect: (v) => updateSettings($, { layout: v }),
+        }),
+        Select({
           key: 'fanyi-detection',
           label: 'Detection',
           value: s.detection,
@@ -939,9 +967,11 @@ export function register(on, options = {}) {
     return result
   })
 
-  // Display: keep Claude Code's own drawing of the reply and put it in a dim rounded frame with
-  // its translation under a rule, so each original and translation read as a pair; the
-  // translation is updated as it streams
+  // Display: keep Claude Code's own drawing of the reply and add its translation, updated as it
+  // streams: by default in one dim rounded frame with the original, under a rule, so each pair
+  // reads as one; with the 'below' layout in a dim rounded box under the reply. The 'translated'
+  // layout has Claude Code draw the translation in the reply's place instead, with a button
+  // under it that shows the original.
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
     const key = e.props.text.trim()
@@ -951,14 +981,57 @@ export function register(on, options = {}) {
     // failed, translated; or a block of a resumed or restarted conversation's history, translated
     // as the "On resume" setting says. A saved translation is drawn either way.
     if (!entry && key) entry = await entryFor($, e.props.text, !isLive(key))
+    if (!entry || entry.skipped) return next(e)
+    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const s = await getSettings($)
+    if (s.layout === 'translated') {
+      // Until some of it has arrived, the original stands in for the translation
+      if (!entry.text) {
+        const waiting = entry.retrying ? 'Translating · retrying…' : 'Translating…'
+        return Box({ flexDirection: 'column', children: [await next(e), Box({ marginLeft: 2, children: [Text({ dimColor: true, italic: true, children: waiting })] })] })
+      }
+      // The translation drawn as the reply itself, then a small button that shows the original under it
+      const open = revealed.has(key)
+      return Box({
+        flexDirection: 'column',
+        children: [
+          await next({ ...e, props: { ...e.props, text: entry.text } }),
+          Box({
+            flexDirection: 'row',
+            gap: 1,
+            marginLeft: 2,
+            children: [
+              Button({ key: 'fanyi-original-' + blockKey(key), label: (open ? '▾ ' : '▸ ') + originalLabel(s.language), plain: true, dimColor: true, onPress: () => toggleOriginal($, key) }),
+              ...(entry.done ? [] : [Text({ dimColor: true, children: entry.retrying ? 'retrying…' : 'streaming…' })]),
+            ],
+          }),
+          ...(open ? [Box({ marginLeft: 2, children: [Markdown({ text: e.props.text, dimColor: true })] })] : []),
+        ],
+      })
+    }
     const drawn = await next(e)
-    if (!entry || entry.skipped) return drawn
-    const { Box, Text, Markdown } = $.ui.resolve(e)
     const state = entry.done ? '' : entry.retrying ? ' · retrying…' : ' · streaming…'
-    const rule = '─── ' + translationLabel((await getSettings($)).language) + state + ' ───'
     const body = entry.text
       ? Markdown({ text: entry.text })
       : Text({ dimColor: true, italic: true, children: 'Translating…' })
+    if (s.layout === 'below') {
+      return Box({
+        flexDirection: 'column',
+        children: [
+          drawn,
+          Box({
+            flexDirection: 'column',
+            marginLeft: 2,
+            marginTop: 1,
+            paddingX: 1,
+            borderStyle: 'round',
+            borderDimColor: true,
+            children: [Text({ dimColor: true, children: 'Translation' + state }), body],
+          }),
+        ],
+      })
+    }
+    const rule = '─── ' + translationLabel(s.language) + state + ' ───'
     return Box({
       flexDirection: 'column',
       paddingX: 1,
