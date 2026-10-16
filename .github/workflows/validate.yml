@@ -1,6 +1,7 @@
 name: Validate
 
-# Installs auto-update from main, so a broken push reaches them: this flags it.
+# Installs auto-update from main when a plugin's version goes up, so a broken
+# push reaches them, and one with no bump doesn't: this flags both.
 on:
   push:
     branches: [main]
@@ -16,9 +17,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
+        with:
+          # The bump check compares with the commit before the push
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 22
+      - name: Check that each changed plugin bumped its version
+        env:
+          BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "No earlier commit to compare with"
+            exit 0
+          fi
+          node scripts/check-versions.mjs "$BASE"
       - run: npm install -g @anthropic-ai/claude-code@latest
       - run: claude --version
       - name: Validate the marketplace

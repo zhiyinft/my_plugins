@@ -51,9 +51,8 @@ function fetchUpstream({ repo, branch }) {
   return git(['rev-parse', 'FETCH_HEAD^{commit}'])
 }
 
-// Without a version, Claude Code versions a plugin by its git commit, so every
-// push here reaches the installs that auto-update. Upstream's pinned version
-// would hold them back until someone bumped it, so imports leave it out.
+// The plugins here carry versions of their own, bumped with each change (see
+// README). Imports leave upstream's out, so a sync never moves ours.
 function unpinVersion(json) {
   const parsed = JSON.parse(json)
   if (!('version' in parsed)) return json
@@ -146,9 +145,9 @@ function sync(prefix, upstream) {
   try {
     execFileSync('git', ['merge', '--no-ff', `-Xsubtree=${prefix}`, '-m', `Merge upstream ${commit.slice(0, 7)} into ${prefix}`, imported], { stdio: 'inherit' })
   } catch {
-    fail(`${prefix}: resolve the conflicts above, then git commit`)
+    fail(`${prefix}: resolve the conflicts above, then git commit; then bump the version in ${prefix}/${MANIFEST}`)
   }
-  console.log(`${prefix}: merged upstream ${commit.slice(0, 7)}`)
+  console.log(`${prefix}: merged upstream ${commit.slice(0, 7)}; bump the version in ${prefix}/${MANIFEST} before pushing`)
 }
 
 const [command, ...args] = process.argv.slice(2)
