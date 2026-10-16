@@ -668,6 +668,57 @@ function redrawRailLater($: EngineInterface) {
   $.clock.after(0, () => void redrawRail($))
 }
 
+// A prompt's text as compared with the conversation's.
+const comparable = (text: string) => text.replace(VIEW_CONTEXT, '').replace(/\s+/g, ' ').trim()
+
+// Where each user message's text stands in the conversation the engine holds:
+// comparable text -> the indexes of the messages with it, oldest first.
+type Places = Map<string, number[]>
+async function conversationPlaces($: EngineInterface): Promise<Places | undefined> {
+  try {
+    const messages = await $.session.messages()
+    if (!Array.isArray(messages)) return undefined
+    const places: Places = new Map()
+    messages.forEach((message, i) => {
+      if (message.role !== 'user' || !message.text) return
+      const key = comparable(message.text)
+      places.set(key, [...(places.get(key) ?? []), i])
+    })
+    return places
+  } catch {
+    // A host with no conversation to hand over leaves the order drawn.
+    return undefined
+  }
+}
+
+// Whether an ordering is under way, and whether a call came meanwhile.
+type Ordering = { isRunning: boolean; isAgain: boolean }
+
+// From a render hook, for a list kept as rows are drawn: once its dispatch
+// ends, draw the rail again, then have `order` put the list in the
+// conversation's order, and draw it again if that moved anything. One ordering
+// runs at a time; a call meanwhile has it run once more.
+function relistLater($: EngineInterface, ordering: Ordering, order: (places: Places) => boolean) {
+  $.clock.after(0, () => void relist($, ordering, order))
+}
+async function relist($: EngineInterface, ordering: Ordering, order: (places: Places) => boolean) {
+  await redrawRail($)
+  if (ordering.isRunning) {
+    ordering.isAgain = true
+    return
+  }
+  ordering.isRunning = true
+  try {
+    do {
+      ordering.isAgain = false
+      const places = await conversationPlaces($)
+      if (places && order(places)) await redrawRail($)
+    } while (ordering.isAgain)
+  } finally {
+    ordering.isRunning = false
+  }
+}
+
 // The timers of a redraw waiting for onScreen reports to settle.
 type Settle = { quiet?: Timer; latest?: Timer }
 
@@ -893,6 +944,34 @@ export const register: Register = (on, options) => {
     // A turn's prompt drawn with no provisional row, as the session's first.
     if (isAdded && isRunning && starter === undefined && text === turnText) starter = id
     return isAdded
+  }
+
+  // Whether the list comes from the transcript file. One that cannot be read
+  // (over 4 MiB where no process can run, as in the desktop app) leaves the
+  // prompts listed as their rows are drawn, and a resumed session draws its
+  // older rows only as the person scrolls up to them (see relistLater).
+  const isFiled = () => seen.path !== ''
+  const ordering: Ordering = { isRunning: false, isAgain: false }
+  // Put the prompts listed as drawn in the conversation's order: the n-th
+  // entry of a text goes where the n-th user message with that text is. One
+  // the conversation does not hold (not stored yet, or older than the newest
+  // messages the engine hands over) stays after those, in the order drawn.
+  // True when the list changed.
+  const orderByConversation = (places: Places) => {
+    if (isFiled()) return false
+    const counts = new Map<string, number>()
+    const ordered = entries
+      .map((entry, at) => {
+        const key = comparable(entry.text)
+        const n = counts.get(key) ?? 0
+        counts.set(key, n + 1)
+        return { entry, at, place: places.get(key)?.[n] ?? Infinity }
+      })
+      .sort((x, y) => (x.place === y.place ? x.at - y.at : x.place - y.place))
+      .map(item => item.entry)
+    if (ordered.every((entry, i) => entry === entries[i])) return false
+    entries = ordered
+    return true
   }
 
   // Record one onScreen report: where a row is on screen, or null once it left.
@@ -1336,7 +1415,10 @@ export const register: Register = (on, options) => {
     const text = e.props.text.replace(VIEW_CONTEXT, '').trim()
     if (PROMPT_KINDS.has(e.props.origin.kind) && text && !text.startsWith('/')) {
       drawn.set(rowKey(e.requestId), e.requestId)
-      if (listDrawn(e.requestId, text)) redrawRailLater($)
+      if (listDrawn(e.requestId, text)) {
+        if (isFiled()) redrawRailLater($)
+        else relistLater($, ordering, orderByConversation)
+      }
       if (e.props.onScreen !== undefined) {
         afterReport($, settle, see(e.component, e.requestId, e.props.onScreen), dropAbove, isDrawnStale)
       }

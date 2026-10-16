@@ -374,7 +374,7 @@ const world = (on: any, initial: Record<string, unknown> = {}, transcript = TRAN
   // The engine resolves a path that is not absolute on its own host against
   // the working directory, as a Windows path is on Linux: the end still names
   // the transcript.
-  const isTranscript = (path: string) => path === disk.path || path.endsWith(disk.path)
+  const isTranscript = (path: string) => path === disk.path || path.replace(/\\/g, '/').endsWith(disk.path)
   on('fs.read', ($: any, e: any) => {
     disk.reads++
     if (bytes(disk.transcript).length > READ_CAP) return { deny: 'over 4 MiB' }
@@ -554,6 +554,26 @@ test('where no process can run, a large transcript leaves the drawn list and say
   await clock.settle()
   expect(await railLabels($)).toEqual(['二番目のプロンプト'])
   expect(disk.toasts.filter(text => text.includes('too large'))).toHaveLength(1)
+})
+
+test('where no process can run, rows drawn as a resumed session scrolls up are listed in the conversation order', async ($, on) => {
+  const { disk, clock } = bigWorld(on)
+  disk.spawnFails = true
+  const said = (role: 'user' | 'assistant', text: string) => ({ role, text, toolUses: [] })
+  on('session.messages', () => ({
+    value: [said('user', 'first'), said('assistant', 'read it'), said('user', '二番目のプロンプト'), said('assistant', 'ok'), said('user', 'third')],
+  }))
+  await $.classic.SessionStart({ source: 'resume', session_id: 's1', transcript_path: '/t/s1.jsonl' })
+  await clock.settle()
+  // The surface draws the newest rows first, older ones as they scroll into view.
+  await drawRow($, 'p3', 'third')
+  await drawRow($, 'p2', '二番目のプロンプト')
+  await clock.settle()
+  await drawRow($, 'p1', 'first')
+  // A prompt the conversation does not hold yet stays after those it does.
+  await drawRow($, 'p4', 'not stored yet')
+  await clock.settle()
+  expect(await railLabels($)).toEqual(['first', '二番目のプロンプト', 'third', 'not stored yet'])
 })
 
 test('a large transcript is read with tail, and on Windows, where tail is not a given, PowerShell stands by', () => {
