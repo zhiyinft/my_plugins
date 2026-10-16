@@ -556,24 +556,39 @@ test('where no process can run, a large transcript leaves the drawn list and say
   expect(disk.toasts.filter(text => text.includes('too large'))).toHaveLength(1)
 })
 
-test('where no process can run, rows drawn as a resumed session scrolls up are listed in the conversation order', async ($, on) => {
+test('where no process can run, history drawn as a resumed session scrolls up goes above what is listed', async ($, on) => {
   const { disk, clock } = bigWorld(on)
   disk.spawnFails = true
-  const said = (role: 'user' | 'assistant', text: string) => ({ role, text, toolUses: [] })
-  on('session.messages', () => ({
-    value: [said('user', 'first'), said('assistant', 'read it'), said('user', '二番目のプロンプト'), said('assistant', 'ok'), said('user', 'third')],
-  }))
   await $.classic.SessionStart({ source: 'resume', session_id: 's1', transcript_path: '/t/s1.jsonl' })
   await clock.settle()
-  // The surface draws the newest rows first, older ones as they scroll into view.
+  // The newest rows load first, each load top to bottom; a scroll up loads the ones before.
+  await drawRow($, 'p5', 'fifth')
+  await drawRow($, 'p6', 'sixth')
+  await clock.advance(200)
   await drawRow($, 'p3', 'third')
-  await drawRow($, 'p2', '二番目のプロンプト')
-  await clock.settle()
+  await drawRow($, 'p4', 'fourth')
+  await clock.advance(200)
+  await drawRow($, 'p2', 'second')
+  await clock.advance(200)
   await drawRow($, 'p1', 'first')
-  // A prompt the conversation does not hold yet stays after those it does.
-  await drawRow($, 'p4', 'not stored yet')
+  await clock.advance(200)
+  expect(await railLabels($)).toEqual(['first', 'second', 'third', 'fourth', 'fifth', 'sixth'])
+})
+
+test('where no process can run, a prompt sent stays last and history loaded after it goes above', async ($, on) => {
+  const { disk, clock } = bigWorld(on)
+  disk.spawnFails = true
+  on('turn.start', ($: any, e: any) => ({ turnId: e.turnId }))
+  on('prompt.submit', ($: any, e: any) => ({ text: e.text }))
+  await $.classic.SessionStart({ source: 'resume', session_id: 's1', transcript_path: '/t/s1.jsonl' })
   await clock.settle()
-  expect(await railLabels($)).toEqual(['first', '二番目のプロンプト', 'third', 'not stored yet'])
+  await drawRow($, 'p2', 'second')
+  await clock.advance(200)
+  await sendFirst($, 'sent now', 'p3')
+  await clock.advance(200)
+  await drawRow($, 'p1', 'first')
+  await clock.advance(200)
+  expect(await railLabels($)).toEqual(['first', 'second', 'sent now'])
 })
 
 test('a large transcript is read with tail, and on Windows, where tail is not a given, PowerShell stands by', () => {
