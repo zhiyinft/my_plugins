@@ -4,12 +4,14 @@
 // can take a subdirectory of the upstream repo and needs nothing but git and
 // node, so it runs the same on Windows and in CI.
 //
-//   node scripts/vendor.mjs add <prefix> <repo-url> [--branch main] [--path <dir>] [--file <path>]...
+//   node scripts/vendor.mjs add <prefix> <repo-url> [--branch main] [--path <dir>] [--file <path>]... [--exclude <pathspec>]...
 //   node scripts/vendor.mjs sync [<prefix>...]
 //
 // --path imports that directory of the upstream repo instead of its root.
 // --file also copies an upstream file (a repo-root path, such as LICENSE) to
-// the root of the prefix. Upstreams are recorded in upstreams.json.
+// the root of the prefix. --exclude leaves out what a git pathspec matches,
+// relative to the imported directory (`docs/*.png` matches in subfolders too).
+// Upstreams are recorded in upstreams.json.
 //
 // Each import is a commit of the upstream tree with no history of its own,
 // merged into the prefix. The previous import is the merge base of the next,
@@ -46,7 +48,7 @@ function requireClean() {
 
 function fetchUpstream({ repo, branch }) {
   execFileSync('git', ['fetch', '--no-tags', repo, branch], { stdio: 'inherit' })
-  return git(['rev-parse', 'FETCH_HEAD'])
+  return git(['rev-parse', 'FETCH_HEAD^{commit}'])
 }
 
 // Without a version, Claude Code versions a plugin by its git commit, so every
@@ -64,9 +66,9 @@ function unpinVersion(json) {
   return JSON.stringify(rest, null, 2) + '\n'
 }
 
-// The upstream tree to import: its root or --path directory, plus the --file
-// extras, with the plugin manifest unpinned.
-function importTree(commit, { path, files = [] }) {
+// The upstream tree to import: its root or --path directory, less the
+// --exclude matches, plus the --file extras, with the plugin manifest unpinned.
+function importTree(commit, { path, files = [], exclude = [] }) {
   const source = path ? `${commit}:${path}` : `${commit}^{tree}`
   let type = ''
   try {
@@ -77,6 +79,7 @@ function importTree(commit, { path, files = [] }) {
   const env = { ...process.env, GIT_INDEX_FILE: index }
   try {
     git(['read-tree', source], { env })
+    if (exclude.length) git(['rm', '-r', '-q', '--cached', '--ignore-unmatch', '--', ...exclude], { env })
     for (const file of files) {
       const [mode, , blob] = git(['ls-tree', commit, file]).split(/\s+/)
       if (!blob) fail(`${file} not found upstream`)
@@ -159,11 +162,18 @@ if (command === 'add') {
       branch: { type: 'string', default: 'main' },
       path: { type: 'string' },
       file: { type: 'string', multiple: true },
+      exclude: { type: 'string', multiple: true },
     },
   })
-  if (positionals.length !== 2) fail('usage: add <prefix> <repo-url> [--branch main] [--path <dir>] [--file <path>]...')
+  if (positionals.length !== 2) fail('usage: add <prefix> <repo-url> [--branch main] [--path <dir>] [--file <path>]... [--exclude <pathspec>]...')
   const [prefix, repo] = positionals
-  add(normalize(prefix), { repo, branch: values.branch, ...(values.path && { path: normalize(values.path) }), ...(values.file && { files: values.file }) })
+  add(normalize(prefix), {
+    repo,
+    branch: values.branch,
+    ...(values.path && { path: normalize(values.path) }),
+    ...(values.file && { files: values.file }),
+    ...(values.exclude && { exclude: values.exclude }),
+  })
 } else if (command === 'sync') {
   const config = readConfig()
   const prefixes = args.length ? args.map(normalize) : Object.keys(config)
