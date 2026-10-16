@@ -1,0 +1,6 @@
+{
+  "plugins/fanyi": {
+    "repo": "https://github.com/JrCx7scC/claude-code-fanyi.git",
+    "branch": "main"
+  }
+}
