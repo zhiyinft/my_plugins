@@ -64,20 +64,79 @@ const draw = ($: any, text: string) =>
   $.ui.render({ component: 'AssistantMessage', surface: 'terminal', props: { text, isFirstOfReply: true } } as any)
 const shows = (tree: unknown, s: string) => JSON.stringify(tree).includes(s)
 
-test('a block drawn with no translation yet (redrawn text, a resumed session) is translated as drawn', { options: { api_key: 'k' } }, async ($, on) => {
+// Stores a reply block of this session, as the engine does when the model writes one
+let rows = 0
+const append = ($: any, text: string) =>
+  $.session.append({ message: { type: 'assistant', role: 'assistant', content: [{ type: 'text', text }] }, door: 'response', origin: { kind: 'model', model: 'test' }, uuid: 'row-' + ++rows } as any)
+
+// A resumed conversation, as $.session.messages() reads it: an older reply, then a last reply
+// split by a tool call
+const RESUMED = [
+  { role: 'user', text: 'First question', toolUses: [] },
+  { role: 'assistant', text: 'An older reply.', toolUses: [] },
+  { role: 'user', text: 'Second question', toolUses: [] },
+  { role: 'assistant', text: 'Let me look.', toolUses: [{ tool_use_id: 't1', name: 'Bash' }] },
+  { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: 'ok', isError: false }] },
+  { role: 'assistant', text: 'The last reply.', toolUses: [] },
+]
+const resumed = (on: any, messages: unknown[] = RESUMED) => on('session.messages', async () => ({ value: messages }))
+
+test('a resumed session translates its last reply only; an older reply stays English and costs nothing', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   const calls = translator(on)
+  store(on)
+  resumed(on)
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
-  expect(shows(await draw($, 'Drawn text that was never stored as is.'), 'Translating')).toBe(true)
+  expect(shows(await draw($, 'The last reply.'), 'Translating')).toBe(true)
+  expect(shows(await draw($, 'Let me look.'), 'Translating')).toBe(true)
+  expect(shows(await draw($, 'An older reply.'), 'Translat')).toBe(false)
+  await clock.advance(1000)
+  expect(calls.filter((c) => c === 'translate_start').length).toBe(2)
+  expect(shows(await draw($, 'The last reply.'), '译文：ok')).toBe(true)
+  expect(shows(await draw($, 'An older reply.'), 'Translat')).toBe(false)
+})
+
+test('"On resume" set to none leaves the last reply English too, and set to every reply translates the older ones', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on)
+  const kept = store(on)
+  resumed(on)
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  on('ui.render', { component: 'Pane' }, async ($, e) => $.ui.resolve(e).Box({}))
+  expect(shows(await pane($), 'Translate the last reply')).toBe(true)
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-history', value: 'none' })
+  expect((kept.get('settings') as any).history).toBe('none')
+  expect(shows(await draw($, 'The last reply.'), 'Translat')).toBe(false)
+  await clock.advance(1000)
+  expect(calls.filter((c) => c === 'translate_start')).toEqual([])
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-history', value: 'all' })
+  expect(shows(await draw($, 'An older reply.'), 'Translating')).toBe(true)
+  expect(shows(await draw($, 'The last reply.'), 'Translating')).toBe(true)
+})
+
+test('a reply of this session is translated wherever it sits, drawn in one frame with its original above a rule', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on)
+  store(on)
+  resumed(on)
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  await append($, 'A reply written in this session.')
   await clock.advance(1000)
   expect(calls).toContain('translate_start')
-  expect(shows(await draw($, 'Drawn text that was never stored as is.'), '译文：ok')).toBe(true)
+  const tree: any = await draw($, 'A reply written in this session.')
+  expect(tree.props.borderStyle).toBe('round')
+  const drawn = JSON.stringify(tree)
+  const at = (s: string) => drawn.indexOf(s)
+  expect(at('A reply written in this session.')).toBeGreaterThan(-1)
+  expect(at('A reply written in this session.')).toBeLessThan(at('─── 译文 ───'))
+  expect(at('─── 译文 ───')).toBeLessThan(at('译文：ok'))
 })
 
 test('a failed translation is retried, the box saying so meanwhile', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   const calls = translator(on, { fail: 2 })
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  await append($, 'A block whose first attempts are rate limited.')
   await draw($, 'A block whose first attempts are rate limited.')
   await clock.advance(100)
   expect(shows(await draw($, 'A block whose first attempts are rate limited.'), 'retrying')).toBe(true)
@@ -117,6 +176,7 @@ test('a finished translation is saved to the store, so a later session does not 
   const kept = store(on)
   const text = 'A reply block translated for the first time.'
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  await append($, text)
   await draw($, text)
   await clock.advance(5000)
   const saved = kept.get('translations:api:glm-5.3:zh-Hans') as any
@@ -132,6 +192,7 @@ test('/fanyi turns it off and on: off, a reply gets no translation box and nothi
   const off = await $.command.run({ command: 'fanyi', args: 'off' } as any)
   expect(String(off.text)).toContain('off')
   expect((kept.get('settings') as any)?.enabled).toBe(false)
+  await append($, 'A reply while fanyi is off.')
   expect(shows(await draw($, 'A reply while fanyi is off.'), 'Translat')).toBe(false)
   await clock.advance(5000)
   expect(calls.filter((c) => c !== 'connect')).toEqual([])
@@ -147,6 +208,7 @@ test('a resumed session drawing replies before the translator has connected wait
   const clock = mock.clock(on)
   const calls = translator(on, { offline: 3 })
   store(on)
+  resumed(on, [...RESUMED, { role: 'assistant', text: 'A reply drawn while the translator starts.', toolUses: [] }])
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
   expect(shows(await draw($, 'A reply drawn while the translator starts.'), 'Translat')).toBe(true)
   await clock.advance(30000)
@@ -173,6 +235,7 @@ test('a reply already in the user\'s language gets no box, and that is saved', {
   const kept = store(on)
   on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
   const text = 'Already in the user language.'
+  await append($, text)
   await draw($, text)
   await clock.advance(5000)
   expect(shows(await draw($, text), 'Translat')).toBe(false)

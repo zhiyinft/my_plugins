@@ -2,10 +2,13 @@
 //
 // - A prompt in your language is translated to English before Claude reads it.
 // - Each text block of Claude's reply that isn't already in your language gets a streamed
-//   translation drawn under it. It's display-only: the stored conversation stays English.
+//   translation, drawn with the original in one frame. It's display-only: the stored
+//   conversation stays English.
+// - A resumed or restarted conversation's history is translated as the "On resume" setting says:
+//   by default only its last reply; a translation saved earlier is drawn either way.
 // - Whether a text needs translating is decided by the translator server: by script for a
 //   language not written in Latin script, by the model otherwise.
-// - Settings (on/off, engine, language, detection) live in the plugin's store and are changed
+// - Settings (on/off, engine, language, detection, on resume) live in the plugin's store and are changed
 //   from a settings pane (the ⚙ beside the toggle above the prompt, or /fanyi settings).
 //
 // Translation runs in the plugin's own MCP server (mcp/translator.mjs), so the mod
@@ -18,8 +21,12 @@ const POLL_MS = 300
 // How many prompts and reply blocks to remember per session
 const MAX_ENTRIES = 500
 
-// Reply block text → { text: translation so far, done, skipped?, retrying? }
+// Reply block text → { text: translation so far, done, skipped?, retrying?, held? }; a held block
+// is history left in English (see entryFor)
 const replies = new Map()
+// Trimmed texts of the reply blocks stored while this module ran: always translated. Any other
+// block drawn is a resumed or restarted conversation's history.
+const live = new Map()
 // English prompt sent to Claude → what the user typed
 const prompts = new Map()
 
@@ -100,6 +107,8 @@ const DEFAULT_SETTINGS = {
   engine: 'api',
   language: 'zh-Hans',
   detection: 'device',
+  // Which replies of a resumed conversation's history are translated: 'last', 'all' or 'none'
+  history: 'last',
   base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
   model: 'glm-5.3',
 }
@@ -138,6 +147,10 @@ async function updateSettings($, change) {
     phrases.clear()
     waiting.length = 0
     queued.length = 0
+  }
+  // The history left in English is decided again by the next draw
+  if (settings.history !== prev.history) {
+    for (const [key, entry] of replies) if (entry.held) replies.delete(key)
   }
   $.ui.invalidate('ui.render')
 }
@@ -333,18 +346,76 @@ function dropReply($, key, err) {
 }
 
 // The translation entry of a reply block not seen yet: the saved one when there is one, else a
-// new one whose translation starts now
-async function entryFor($, text) {
+// new one whose translation starts now. A block of the history with none saved is translated
+// only as `wanted` says; otherwise it's held: drawn as is and not saved, so another setting or a
+// later session can still translate it.
+async function entryFor($, text, isHistory = false) {
   const key = text.trim()
   const s = await loadSaved($)
   // Another hook may have started it while the store was read
   const seen = replies.get(key)
   if (seen) return seen
   const hit = s.replies.get(blockKey(key))
-  const entry = hit === undefined ? { text: '', done: false } : { text: hit, done: true, skipped: hit === '' }
+  const start = hit === undefined && (!isHistory || (await wanted($, key)))
+  // ...or while the conversation was read
+  const again = replies.get(key)
+  if (again) return again
+  const entry =
+    hit !== undefined ? { text: hit, done: true, skipped: hit === '' } : start ? { text: '', done: false } : { text: '', done: true, skipped: true, held: true }
   remember(replies, key, entry)
-  if (hit === undefined) $.clock.after(0, () => enqueue($, text))
+  if (start) $.clock.after(0, () => enqueue($, text))
   return entry
+}
+
+// Whether a drawn block was stored while this module ran. The transcript can draw a block's text
+// less what it hides, so a part of a stored one counts too.
+function isLive(key) {
+  if (live.has(key)) return true
+  for (const text of live.keys()) if (text.includes(key)) return true
+  return false
+}
+
+// Whether a block of the history with no saved translation is translated: as the "On resume"
+// setting says, by default only when it's part of the conversation's last reply
+async function wanted($, key) {
+  const { history } = await getSettings($)
+  if (history === 'all') return true
+  if (history === 'none') return false
+  return (await lastReply($)).some((text) => text.includes(key))
+}
+
+// { id, texts } of the session whose last reply was read: a promise of the texts, null when the
+// conversation wasn't there yet
+let tail = null
+
+// The texts of the conversation's last reply, read once per session, when its history is first drawn
+async function lastReply($) {
+  const id = await $.session.id()
+  if (!tail || tail.id !== id) tail = { id, texts: readLastReply($) }
+  const read = tail
+  const texts = await read.texts
+  if (texts === null && tail === read) tail = null
+  return texts || []
+}
+
+// The text of each assistant message after the last prompt that got an answer, newest first;
+// tool results don't end a reply, and neither does a prompt nothing answered yet
+async function readLastReply($) {
+  let messages
+  try {
+    messages = await $.session.messages()
+  } catch {
+    return null
+  }
+  if (!Array.isArray(messages) || !messages.length) return null
+  const texts = []
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]
+    if (m.role === 'assistant') {
+      if (m.text && m.text.trim()) texts.push(m.text)
+    } else if (texts.length && !(m.toolResults && m.toolResults.length) && m.text && m.text.trim()) break
+  }
+  return texts
 }
 
 // Short strings the engine draws that aren't reply blocks: a question dialog's text and a
@@ -578,27 +649,29 @@ async function drawnAnswer($, value) {
 
 // The settings pane, and what it offers
 const PANE = 'fanyi-settings'
+// [tag, name, the word for "translation" a reply's frame shows]
 const LANGUAGES = [
-  ['zh-Hans', '简体中文'],
-  ['zh-Hant', '繁體中文'],
-  ['ja', '日本語'],
-  ['ko', '한국어'],
-  ['es', 'Español'],
-  ['fr', 'Français'],
-  ['de', 'Deutsch'],
-  ['pt-BR', 'Português (Brasil)'],
-  ['it', 'Italiano'],
-  ['ru', 'Русский'],
-  ['uk', 'Українська'],
-  ['pl', 'Polski'],
-  ['nl', 'Nederlands'],
-  ['tr', 'Türkçe'],
-  ['vi', 'Tiếng Việt'],
-  ['id', 'Bahasa Indonesia'],
-  ['th', 'ไทย'],
-  ['hi', 'हिन्दी'],
-  ['ar', 'العربية'],
+  ['zh-Hans', '简体中文', '译文'],
+  ['zh-Hant', '繁體中文', '譯文'],
+  ['ja', '日本語', '訳文'],
+  ['ko', '한국어', '번역'],
+  ['es', 'Español', 'Traducción'],
+  ['fr', 'Français', 'Traduction'],
+  ['de', 'Deutsch', 'Übersetzung'],
+  ['pt-BR', 'Português (Brasil)', 'Tradução'],
+  ['it', 'Italiano', 'Traduzione'],
+  ['ru', 'Русский', 'Перевод'],
+  ['uk', 'Українська', 'Переклад'],
+  ['pl', 'Polski', 'Tłumaczenie'],
+  ['nl', 'Nederlands', 'Vertaling'],
+  ['tr', 'Türkçe', 'Çeviri'],
+  ['vi', 'Tiếng Việt', 'Bản dịch'],
+  ['id', 'Bahasa Indonesia', 'Terjemahan'],
+  ['th', 'ไทย', 'คำแปล'],
+  ['hi', 'हिन्दी', 'अनुवाद'],
+  ['ar', 'العربية', 'الترجمة'],
 ]
+const translationLabel = (language) => (LANGUAGES.find(([tag]) => tag === language) || [])[2] || 'Translation'
 // Whether Apple's on-device engine can run here: null until the translator has been asked
 let appleCaps = null
 // The API key's state, { isSet, source, hint }: null until asked
@@ -665,7 +738,7 @@ async function openSettings($) {
   if (!appleCaps) $.clock.after(0, () => loadCapabilities($))
   $.clock.after(0, () => loadKeyStatus($))
   if (!modelList || modelList.error) $.clock.after(0, () => loadModels($))
-  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 22, columns: 64 })
+  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 23, columns: 64 })
 }
 
 // Switches the engine, refusing Apple's when this machine can't run it
@@ -816,6 +889,17 @@ export function register(on, options = {}) {
           ],
           onSelect: (v) => updateSettings($, { detection: v }),
         }),
+        Select({
+          key: 'fanyi-history',
+          label: 'On resume',
+          value: s.history,
+          options: [
+            { value: 'last', label: 'Translate the last reply' },
+            { value: 'all', label: 'Translate every reply' },
+            { value: 'none', label: 'Translate none' },
+          ],
+          onSelect: (v) => updateSettings($, { history: v }),
+        }),
         ...apiSection($, s, { Box, Text, Select, Button, Input }),
         Box({ marginTop: 1, children: [Text({ dimColor: true, children: settingsNote(s) })] }),
         Box({ marginTop: 1, children: [Button({ key: 'fanyi-close', label: 'Close', onPress: () => $.ui.close({ id: PANE }) })] }),
@@ -839,8 +923,11 @@ export function register(on, options = {}) {
   // Output: once a reply block of the main conversation is stored, translate it in the
   // background so Claude's next step isn't held up
   on('session.append', async ($, e, next) => {
+    if (e.agentId || e.message.type !== 'assistant' || !Array.isArray(e.message.content)) return next(e)
+    // Marked before it's stored, as the transcript may draw the row before this hook resumes; and
+    // while fanyi is off too, so turning it on translates this session's replies
+    for (const block of e.message.content) if (block.type === 'text' && block.text.trim()) remember(live, block.text.trim(), true)
     const result = await next(e)
-    if (e.agentId || e.message.type !== 'assistant') return result
     if (!(await isEnabled($))) return result
     for (const block of e.message.content) {
       const key = block.type === 'text' ? block.text.trim() : ''
@@ -852,37 +939,32 @@ export function register(on, options = {}) {
     return result
   })
 
-  // Display: keep Claude Code's own drawing of the reply and add a dim rounded box with
-  // the translation under it, updated as it streams
+  // Display: keep Claude Code's own drawing of the reply and put it in a dim rounded frame with
+  // its translation under a rule, so each original and translation read as a pair; the
+  // translation is updated as it streams
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
     const key = e.props.text.trim()
     let entry = replies.get(key)
-    // A block drawn with no translation in memory: its drawn text differs from the stored one
-    // (the transcript can redraw a reply), the session was resumed or restarted, or its
-    // translation failed. A saved translation is drawn as is; anything else is translated.
-    if (!entry && key) entry = await entryFor($, e.props.text)
+    // A block drawn with no translation in memory: one stored while this module ran whose drawn
+    // text differs from the stored one (the transcript can redraw a reply) or whose translation
+    // failed, translated; or a block of a resumed or restarted conversation's history, translated
+    // as the "On resume" setting says. A saved translation is drawn either way.
+    if (!entry && key) entry = await entryFor($, e.props.text, !isLive(key))
     const drawn = await next(e)
     if (!entry || entry.skipped) return drawn
     const { Box, Text, Markdown } = $.ui.resolve(e)
-    const title = entry.done ? 'Translation' : entry.retrying ? 'Translation · retrying…' : 'Translation · streaming…'
+    const state = entry.done ? '' : entry.retrying ? ' · retrying…' : ' · streaming…'
+    const rule = '─── ' + translationLabel((await getSettings($)).language) + state + ' ───'
     const body = entry.text
       ? Markdown({ text: entry.text })
       : Text({ dimColor: true, italic: true, children: 'Translating…' })
     return Box({
       flexDirection: 'column',
-      children: [
-        drawn,
-        Box({
-          flexDirection: 'column',
-          marginLeft: 2,
-          marginTop: 1,
-          paddingX: 1,
-          borderStyle: 'round',
-          borderDimColor: true,
-          children: [Text({ dimColor: true, children: title }), body],
-        }),
-      ],
+      paddingX: 1,
+      borderStyle: 'round',
+      borderDimColor: true,
+      children: [drawn, Text({ dimColor: true, children: rule }), body],
     })
   })
 

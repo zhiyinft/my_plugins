@@ -3,7 +3,8 @@
 A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that lets you write to Claude Code in your own language while Claude works in English.
 
 - **Your prompts:** a prompt in your language is translated to English before Claude reads it. Your message row shows what you typed, with the English that was sent dimmed underneath. A prompt that's already in English is sent as typed.
-- **Claude's replies:** each text block of a reply gets a translation into your language in a dim box underneath. It streams in as it's generated and renders as Markdown. A block that's already in your language gets no box.
+- **Claude's replies:** each text block of a reply is drawn with its translation into your language in one dim frame: the original on top, then a rule (`─── 译文 ───`, in your language), then the translation. That way each original and its translation read as a pair. The translation streams in as it's generated and renders as Markdown. A block that's already in your language gets no frame.
+- **Resumed sessions:** after `/resume`, `--continue` or a restart, only the conversation's last reply (every text block after your last prompt) is translated automatically. Older replies stay English unless a translation of them was saved earlier, which is drawn at no cost. The **On resume** setting changes this.
 - **Questions and tool rows:** when Claude asks you a question (the AskUserQuestion dialog), the question is drawn with its translation on the line under it, each option's description with its translation after an arrow, and the header chip translated. An option's label is the answer Claude receives, so it stays English; its translation starts the description's translation. The title of a tool row (the description of a Bash command or a subagent) gets its translation under it too. The row that records your answers (`User answered Claude's questions`) draws each question bilingual as well.
 - **Typed answers:** text you type as an answer to a question (under "Other", or in a text question) is translated to English before Claude reads it, like a prompt; the answer row shows what you typed with the English in parentheses. An option you pick is sent as it is.
 - **The conversation stays English.** Translations of replies are display-only, so the history Claude reads isn't changed. What does change is your input: Claude receives the English version of your prompts and of the answers you type.
@@ -12,7 +13,7 @@ A [Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview) that 
 
 - Claude Code v2.1.287 or later (`claude --version`)
 - Node.js 18 or later, for the bundled translation server
-- For the **API** engine: an API key for an OpenAI-compatible Chat Completions endpoint. The defaults use DeepSeek V4.1 Flash through an [OpenCode Go](https://opencode.ai/docs/go/) subscription.
+- For the **API** engine: an API key for an OpenAI-compatible Chat Completions endpoint. The defaults use GLM-5.3 through Zhipu's coding API (`open.bigmodel.cn`).
 - For the **Apple on-device** engine and on-device language detection: macOS 15 or later with the Xcode command line tools (`xcode-select --install`). The helper is compiled on your Mac the first time it's needed.
 
 ## Install
@@ -38,6 +39,7 @@ The pane applies each choice as soon as it's picked, and keeps it across session
 | Engine | **API**: your configured model, streamed. **Apple on-device**: Apple's Translation framework, so nothing leaves your Mac and a reply takes under a second, but technical terms come out worse. It needs the language packs in System Settings → General → Language & Region → Translation Languages. |
 | Your language | The language prompts are translated from and replies into. Changing it starts translations over in the new language. |
 | Language detection | **On this Mac**: NaturalLanguage tells which language a text is in, with no API call. **Ask the model**: the API model decides, at the cost of a short call. |
+| On resume | Which replies of a resumed conversation's history are translated: **the last reply** (default), **every reply**, or **none**. Replies Claude writes in this session are always translated, and a translation saved earlier is always drawn. |
 | API host | Base URL of any OpenAI-compatible Chat Completions API, without `/chat/completions`. Default `https://open.bigmodel.cn/api/coding/paas/v4`. |
 | API key | Paste it and press Enter. The pane shows only its last four characters. It's kept in the macOS Keychain, or in a file only you can read on other systems. Submit an empty key to remove it. |
 | Model | Picked from the list the API returns from `/models`, with `↻ Refresh` to fetch it again. For an API that lists no models, type the id instead. |
@@ -75,8 +77,8 @@ apple/FanyiApple.swift       on-device helper: NaturalLanguage detection, Transl
 
 - `prompt.submit` sends each prompt to the translator, which translates it to English or says it needs no translation.
 - `tool.call` on `AskUserQuestion` translates the text you typed as an answer to English before Claude reads it.
-- `session.append` starts a translation for each reply text block once it's stored. It runs in the background, so Claude's next step isn't held up.
-- `ui.render` on `AssistantMessage` keeps Claude Code's own drawing of the reply and adds the translation box under it, redrawn as the translation streams in.
+- `session.append` starts a translation for each reply text block once it's stored. It runs in the background, so Claude's next step isn't held up. Blocks stored this way count as this session's. Any other block drawn is history.
+- `ui.render` on `AssistantMessage` puts Claude Code's own drawing of the reply in a frame with the translation under it, redrawn as the translation streams in. For a history block with no saved translation, it reads the conversation once (`$.session.messages()`) to find the last reply, and translates the block only if it's part of that reply or the **On resume** setting says to.
 - `ui.render` on `UserMessage` shows your original prompt, with the English under it.
 - `ui.render` on `AskUserQuestion` and `ToolUse` rewrites the dialog's questions and a tool row's description with their translations. The short strings of one draw are translated in one request; a saved translation is drawn from the store.
 - `ui.render` on `AbovePrompt` draws the toggle, and on a `Pane` the settings.
@@ -97,7 +99,7 @@ With the Apple engine, Markdown is split before translation: code blocks, inline
 - Subagents' replies aren't translated.
 - The dim `summary` line Claude Code draws before a tool call is a thinking block, which plugins can't redraw, so it stays English. A question's option labels stay English too (see above).
 - A question dialog and a tool row show the English until their translation arrives, about a second later.
-- Finished translations are saved in the plugin's own store, per engine and language, so after a restart or `/resume` a reply that was translated before is drawn from it. About 3 MB of the newest translations are kept.
+- Finished translations are saved in the plugin's own store, per engine, model and language, so after a restart or `/resume` a reply that was translated before is drawn from it. About 3 MB of the newest translations are kept. Switching model or language starts over, so older replies show no translation until **On resume** is set to every reply.
 - A failed translation is retried twice (after 2 s and 6 s); at most 3 translations run at once.
 
 ## Development
