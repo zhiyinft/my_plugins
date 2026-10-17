@@ -114,31 +114,53 @@ test('"On resume" set to none leaves the last reply English too, and set to ever
   expect(shows(await draw($, 'The last reply.'), 'Translating')).toBe(true)
 })
 
-test('a reply of this session is translated wherever it sits, drawn in one frame with its original above a rule', { options: { api_key: 'k' } }, async ($, on) => {
+// Draws a reply block as Claude Code does: the bullet only on the block that opens a reply
+const asReply = (on: any) =>
+  on('ui.render', { component: 'AssistantMessage' }, async ($: any, e: any) => $.ui.resolve(e).Text({ children: (e.props.isFirstOfReply ? '● ' : '  ') + e.props.text }))
+
+test('the bilingual layout draws the translation right under the reply, as a reply with 译 in place of its bullet and no border', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   const calls = translator(on)
   store(on)
   resumed(on)
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  asReply(on)
   await append($, 'A reply written in this session.')
+  const pending = JSON.stringify(await draw($, 'A reply written in this session.'))
+  expect(pending).toContain('● A reply written in this session.')
+  expect(pending).toContain('Translating')
   await clock.advance(1000)
   expect(calls).toContain('translate_start')
-  const tree: any = await draw($, 'A reply written in this session.')
-  expect(tree.props.borderStyle).toBe('round')
-  const drawn = JSON.stringify(tree)
-  const at = (s: string) => drawn.indexOf(s)
-  expect(at('A reply written in this session.')).toBeGreaterThan(-1)
-  expect(at('A reply written in this session.')).toBeLessThan(at('─── 译文 ───'))
-  expect(at('─── 译文 ───')).toBeLessThan(at('译文：ok'))
+  const drawn = JSON.stringify(await draw($, 'A reply written in this session.'))
+  expect(drawn).not.toContain('borderStyle')
+  expect(drawn).not.toContain('Translating')
+  // The reply, then the translation drawn as a reply too but without the bullet, and 译 painted
+  // over its bullet column
+  expect(drawn.indexOf('● A reply written in this session.')).toBeGreaterThan(-1)
+  expect(drawn.indexOf('● A reply written in this session.')).toBeLessThan(drawn.indexOf('  译文：ok'))
+  expect(drawn).not.toContain('● 译文：ok')
+  expect(drawn).toContain('"position":"absolute"')
+  expect(drawn).toContain('"译"')
 })
 
-test('the "Translation in a box below" layout draws the reply as is, with the translation boxed under it', { options: { api_key: 'k' } }, async ($, on) => {
+test('a layout kept from 1.1 (the frame) is drawn as the bilingual one', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  translator(on)
+  store(on, { settings: { layout: 'frame' } })
+  asReply(on)
+  await append($, 'A reply drawn after an upgrade.')
+  await clock.advance(1000)
+  const drawn = JSON.stringify(await draw($, 'A reply drawn after an upgrade.'))
+  expect(drawn).not.toContain('borderStyle')
+  expect(drawn).toContain('  译文：ok')
+})
+
+test('the classic layout draws the reply as is, with the translation boxed under it', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   translator(on)
   const kept = store(on)
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  asReply(on)
   on('ui.render', { component: 'Pane' }, async ($, e) => $.ui.resolve(e).Box({}))
-  expect(shows(await pane($), 'Original and translation in one frame')).toBe(true)
+  expect(shows(await pane($), 'Bilingual: translation under each reply')).toBe(true)
   await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-layout', value: 'below' })
   expect((kept.get('settings') as any).layout).toBe('below')
   await append($, 'A reply drawn with the box below.')
@@ -147,43 +169,50 @@ test('the "Translation in a box below" layout draws the reply as is, with the tr
   expect(tree.props.borderStyle).toBeUndefined()
   expect(shows(tree, '"borderStyle":"round"')).toBe(true)
   expect(shows(tree, '"Translation"')).toBe(true)
-  expect(shows(tree, '─── ')).toBe(false)
   expect(shows(tree, '译文：ok')).toBe(true)
-  // Switched back, the same reply is framed with its original again
-  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-layout', value: 'frame' })
-  const framed: any = await draw($, 'A reply drawn with the box below.')
-  expect(framed.props.borderStyle).toBe('round')
-  expect(shows(framed, '─── 译文 ───')).toBe(true)
+  // Switched back, the same reply is bilingual again, with no box
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-layout', value: 'bilingual' })
+  const bilingual = JSON.stringify(await draw($, 'A reply drawn with the box below.'))
+  expect(bilingual).not.toContain('borderStyle')
+  expect(bilingual).toContain('  译文：ok')
 })
 
-test('the "Translation only" layout draws the translation in the reply\'s place, and its button shows and hides the original', { options: { api_key: 'k' } }, async ($, on) => {
+test('the "Translation only" layout draws the translation in the reply\'s place; 译文 | 原文 above the prompt shows every original, dimmed, and hides them again', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   translator(on)
   const kept = store(on)
-  on('ui.render', { component: 'AssistantMessage' }, async ($, e) => $.ui.resolve(e).Text({ children: e.props.text }))
+  asReply(on)
   on('ui.render', { component: 'Pane' }, async ($, e) => $.ui.resolve(e).Box({}))
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => $.ui.resolve(e).Box({}))
+  const band = () => $.ui.render({ component: 'AbovePrompt', surface: 'terminal', props: { hasSurvey: false, isWorking: false } } as any)
+  // The switch is only there in this layout
+  expect(shows(await band(), '原文')).toBe(false)
   await pane($)
   await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-layout', value: 'translated' })
   expect((kept.get('settings') as any).layout).toBe('translated')
   const text = 'A reply drawn as its translation.'
   await append($, text)
-  // Until the translation arrives, the original stands in for it
+  // Until the translation arrives, the original stands alone
   const before = await draw($, text)
   expect(shows(before, text)).toBe(true)
   expect(shows(before, 'Translating')).toBe(true)
   await clock.advance(1000)
-  const hidden = await draw($, text)
-  expect(shows(hidden, '译文：ok')).toBe(true)
-  expect(shows(hidden, text)).toBe(false)
-  expect(shows(hidden, '▸ 原文')).toBe(true)
-  expect(shows(hidden, 'borderStyle')).toBe(false)
-  const button = { plugin: 'fanyi', key: 'fanyi-original-' + blockKey(text) }
-  await ($.ui as any).press(button)
-  const open = await draw($, text)
-  expect(shows(open, '▾ 原文')).toBe(true)
-  expect(shows(open, '译文：ok')).toBe(true)
-  expect(shows(open, text)).toBe(true)
-  await ($.ui as any).press(button)
+  const hidden = JSON.stringify(await draw($, text))
+  expect(hidden).toContain('● 译文：ok')
+  expect(hidden).not.toContain(text)
+  expect(hidden).not.toContain('borderStyle')
+  expect(hidden).not.toContain('Button')
+  // One click on the switch shows every original, dimmed, under its translation
+  expect(shows(await band(), '原文')).toBe(true)
+  await ($.ui as any).press({ plugin: 'fanyi', key: 'fanyi-originals' })
+  expect((kept.get('settings') as any).originals).toBe(true)
+  const open = JSON.stringify(await draw($, text))
+  expect(open.indexOf('● 译文：ok')).toBeGreaterThan(-1)
+  expect(open.indexOf('● 译文：ok')).toBeLessThan(open.indexOf(text))
+  expect(open).toContain('"EN"')
+  // /fanyi original hides them again
+  const r: any = await $.command.run({ command: 'fanyi', args: 'original' } as any)
+  expect(String(r.text)).toContain('hidden')
   expect(shows(await draw($, text), text)).toBe(false)
 })
 

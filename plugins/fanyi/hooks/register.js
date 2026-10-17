@@ -2,9 +2,9 @@
 //
 // - A prompt in your language is translated to English before Claude reads it.
 // - Each text block of Claude's reply that isn't already in your language gets a streamed
-//   translation, drawn as the layout setting says: with the original in one frame, in a box
-//   under it, or in its place with the original behind a button. It's display-only: the stored
-//   conversation stays English.
+//   translation, drawn as the layout setting says: right under the reply, in its place (the
+//   originals a switch away), or in a box under it. It's display-only: the stored conversation
+//   stays English.
 // - A resumed or restarted conversation's history is translated as the "On resume" setting says:
 //   by default only its last reply; a translation saved earlier is drawn either way.
 // - Whether a text needs translating is decided by the translator server: by script for a
@@ -27,10 +27,7 @@ const MAX_ENTRIES = 500
 const replies = new Map()
 // Trimmed texts of the reply blocks stored while this module ran: always translated. Any other
 // block drawn is a resumed or restarted conversation's history.
-const live = new Map()
-// Trimmed texts of the reply blocks whose original is shown, in the 'translated' layout
-const revealed = new Map()
-// English prompt sent to Claude → what the user typed
+const live = new Map()// English prompt sent to Claude → what the user typed
 const prompts = new Map()
 
 // Finished translations are kept in the plugin's store too, so a restarted or resumed session
@@ -112,10 +109,11 @@ const DEFAULT_SETTINGS = {
   detection: 'device',
   // Which replies of a resumed conversation's history are translated: 'last', 'all' or 'none'
   history: 'last',
-  // How a reply's translation is drawn: 'frame' (original and translation in one frame),
-  // 'below' (a box under the reply) or 'translated' (the translation in the reply's place, the
-  // original behind a button)
-  layout: 'frame',
+  // How a reply's translation is drawn: 'bilingual' (right under the reply), 'translated' (in the
+  // reply's place) or 'below' (in a box under the reply)
+  layout: 'bilingual',
+  // Whether the 'translated' layout shows each original, dimmed, under its translation
+  originals: false,
   base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
   model: 'glm-5.3',
 }
@@ -131,6 +129,8 @@ async function getSettings($) {
       stored = await $.store.get(SETTINGS_KEY)
     } catch {}
     settings = { ...DEFAULT_SETTINGS, ...(stored && typeof stored === 'object' ? stored : {}) }
+    // 1.1's framed layout, since replaced by the bilingual one
+    if (settings.layout === 'frame') settings.layout = 'bilingual'
   }
   return settings
 }
@@ -662,8 +662,7 @@ async function drawnAnswer($, value) {
 
 // The settings pane, and what it offers
 const PANE = 'fanyi-settings'
-// [tag, name, the word for "translation" a reply's frame shows, the word for "original" on the
-// button that shows it]
+// [tag, name, the words for "translation" and "original" on the switch above the prompt]
 const LANGUAGES = [
   ['zh-Hans', '简体中文', '译文', '原文'],
   ['zh-Hant', '繁體中文', '譯文', '原文'],
@@ -688,13 +687,10 @@ const LANGUAGES = [
 const languageWord = (language, i, fallback) => (LANGUAGES.find(([tag]) => tag === language) || [])[i] || fallback
 const translationLabel = (language) => languageWord(language, 2, 'Translation')
 const originalLabel = (language) => languageWord(language, 3, 'Original')
-
-// Shows or hides a reply block's original, in the 'translated' layout
-function toggleOriginal($, key) {
-  if (revealed.has(key)) revealed.delete(key)
-  else remember(revealed, key, true)
-  $.ui.invalidate('ui.render')
-}
+// The mark a translation shows in the bullet column: one wide character where the language has
+// one for "translation", an arrow otherwise
+const replyMark = (language) => ({ 'zh-Hans': '译', 'zh-Hant': '譯', ja: '訳' })[language] || '↳'
+const MARK_COLOR = 'cyan'
 // Whether Apple's on-device engine can run here: null until the translator has been asked
 let appleCaps = null
 // The API key's state, { isSet, source, hint }: null until asked
@@ -818,33 +814,56 @@ export function register(on, options = {}) {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'fanyi',
-      description: 'Translation: /fanyi toggles it, /fanyi on|off sets it, /fanyi settings opens the settings',
-      argumentHint: '[on|off|settings]',
+      description: 'Translation: /fanyi toggles it, /fanyi on|off sets it, /fanyi original shows or hides the originals, /fanyi settings opens the settings',
+      argumentHint: '[on|off|original|settings]',
     })
     await getSettings($)
     return next(e)
   })
 
-  // /fanyi flips it; /fanyi on|off sets it; /fanyi settings opens the pane
+  // /fanyi flips it; /fanyi on|off sets it; /fanyi original flips the originals; /fanyi settings
+  // opens the pane
   on('command.run', { command: 'fanyi' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'settings') {
       await openSettings($)
       return {}
     }
-    if (arg && arg !== 'on' && arg !== 'off') return { text: 'Usage: /fanyi, /fanyi on, /fanyi off or /fanyi settings' }
+    if (arg === 'original') {
+      const s = await getSettings($)
+      await updateSettings($, { originals: !s.originals })
+      const where = s.layout === 'translated' ? '' : ' They show in the "Translation only" layout; the others always show the original.'
+      return { text: (s.originals ? 'Originals hidden: replies show the translation only.' : 'Originals shown, dimmed, under each translation.') + where }
+    }
+    if (arg && arg !== 'on' && arg !== 'off') return { text: 'Usage: /fanyi, /fanyi on, /fanyi off, /fanyi original or /fanyi settings' }
     const value = arg ? arg === 'on' : !(await isEnabled($))
     await updateSettings($, { enabled: value })
     return { text: value ? 'Fanyi on: prompts in your language are translated to English, replies get a translation.' : 'Fanyi off: prompts are sent as typed, replies are not translated.' }
   })
 
-  // A one-line toggle above the prompt: "Fanyi ● On  ⚙", clicked or pressed
+  // A one-line toggle above the prompt: "Fanyi ● On · ⚙", clicked or pressed. With the
+  // "Translation only" layout it also holds the switch for the originals: "译文 | 原文", one
+  // button, the side in effect bold.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const drawn = await next(e)
     if (e.props.hasSurvey) return drawn
     const s = await getSettings($)
     const isOn = s.enabled
     const { Box, Text, Button } = $.ui.resolve(e)
+    const side = (label, isActive) => Text({ bold: isActive, color: isActive ? MARK_COLOR : undefined, dimColor: !isActive, children: label })
+    const originals =
+      isOn && s.layout === 'translated'
+        ? [
+            Text({ dimColor: true, children: '·' }),
+            Button({
+              key: 'fanyi-originals',
+              label: s.originals ? 'Hide the originals' : 'Show the originals',
+              plain: true,
+              onPress: () => updateSettings($, { originals: !s.originals }),
+              children: [side(translationLabel(s.language), !s.originals), Text({ dimColor: true, children: ' | ' }), side(originalLabel(s.language), s.originals)],
+            }),
+          ]
+        : []
     const toggle = Box({
       flexDirection: 'row',
       gap: 1,
@@ -858,6 +877,7 @@ export function register(on, options = {}) {
           dimColor: !isOn,
           onPress: () => updateSettings($, { enabled: !isOn }),
         }),
+        ...originals,
         Text({ dimColor: true, children: '·' }),
         Button({ key: 'fanyi-settings', label: '⚙', plain: true, dimColor: true, onPress: () => openSettings($) }),
       ],
@@ -907,9 +927,9 @@ export function register(on, options = {}) {
           label: 'Layout',
           value: s.layout,
           options: [
-            { value: 'frame', label: 'Original and translation in one frame' },
-            { value: 'below', label: 'Translation in a box below' },
-            { value: 'translated', label: 'Translation only, original behind a button' },
+            { value: 'bilingual', label: 'Bilingual: translation under each reply' },
+            { value: 'translated', label: 'Translation only (originals: 译文 | 原文 above the prompt)' },
+            { value: 'below', label: 'Classic: translation in a box below' },
           ],
           onSelect: (v) => updateSettings($, { layout: v }),
         }),
@@ -973,11 +993,13 @@ export function register(on, options = {}) {
     return result
   })
 
-  // Display: keep Claude Code's own drawing of the reply and add its translation, updated as it
-  // streams: by default in one dim rounded frame with the original, under a rule, so each pair
-  // reads as one; with the 'below' layout in a dim rounded box under the reply. The 'translated'
-  // layout has Claude Code draw the translation in the reply's place instead, with a button
-  // under it that shows the original.
+  // Display: keep the reply as drawn beneath (Claude Code, or a mod such as prismantis) and add
+  // its translation, updated as it streams, as the layout setting says:
+  // - 'bilingual': the translation right under the reply, drawn beneath as a reply too, so it
+  //   looks like one, with a mark (译) in the bullet column in place of the bullet
+  // - 'translated': the translation drawn in the reply's place; with originals switched on (the
+  //   Fanyi line above the prompt, or /fanyi original), the original dimmed under it
+  // - 'below': a dim rounded box with the translation under the reply, as upstream draws it
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
     const drawn = await next(e)
@@ -990,61 +1012,53 @@ export function register(on, options = {}) {
     // as the "On resume" setting says. A saved translation is drawn either way.
     if (!entry && key) entry = await entryFor($, e.props.text, !isLive(key))
     if (!entry || entry.skipped) return drawn
-    const { Box, Text, Button, Markdown } = $.ui.resolve(e)
+    const { Box, Text, Markdown } = $.ui.resolve(e)
     const s = await getSettings($)
-    if (s.layout === 'translated') {
-      // Until some of it has arrived, the original stands in for the translation
+    // A row with `mark` in the bullet column and `body` where the reply's text sits
+    const gutter = (mark, body) =>
+      Box({
+        flexDirection: 'row',
+        children: [Box({ width: 2, flexShrink: 0, children: [mark] }), Box({ flexDirection: 'column', flexGrow: 1, children: [body] })],
+      })
+    const mark = Text({ color: MARK_COLOR, children: replyMark(s.language) })
+    if (s.layout !== 'below') {
+      // Until some of it has arrived, the original stands alone with a line saying so
       if (!entry.text) {
-        const waiting = entry.retrying ? 'Translating · retrying…' : 'Translating…'
-        return Box({ flexDirection: 'column', children: [drawn, Box({ marginLeft: 2, children: [Text({ dimColor: true, italic: true, children: waiting })] })] })
+        const waiting = Text({ dimColor: true, italic: true, children: entry.retrying ? 'Translating · retrying…' : 'Translating…' })
+        return Box({ flexDirection: 'column', children: [drawn, gutter(mark, waiting)] })
       }
-      // The translation drawn as the reply itself, then a small button that shows the original under it
-      const open = revealed.has(key)
+      if (s.layout === 'translated') {
+        const translation = await next({ ...e, props: { ...e.props, text: entry.text } })
+        if (!s.originals) return translation
+        const original = gutter(Text({ dimColor: true, children: 'EN' }), Markdown({ text: e.props.text, dimColor: true }))
+        return Box({ flexDirection: 'column', children: [translation, original] })
+      }
+      // Bilingual: drawn with no bullet, its bullet column left blank, and the mark painted over it
+      const translation = await next({ ...e, props: { ...e.props, text: entry.text, isFirstOfReply: false } })
       return Box({
         flexDirection: 'column',
-        children: [
-          await next({ ...e, props: { ...e.props, text: entry.text } }),
-          Box({
-            flexDirection: 'row',
-            gap: 1,
-            marginLeft: 2,
-            children: [
-              Button({ key: 'fanyi-original-' + blockKey(key), label: (open ? '▾ ' : '▸ ') + originalLabel(s.language), plain: true, dimColor: true, onPress: () => toggleOriginal($, key) }),
-              ...(entry.done ? [] : [Text({ dimColor: true, children: entry.retrying ? 'retrying…' : 'streaming…' })]),
-            ],
-          }),
-          ...(open ? [Box({ marginLeft: 2, children: [Markdown({ text: e.props.text, dimColor: true })] })] : []),
-        ],
+        children: [drawn, Box({ flexDirection: 'column', children: [translation, Box({ position: 'absolute', top: 0, left: 0, children: [mark] })] })],
       })
     }
+    // Below: upstream's box
     const state = entry.done ? '' : entry.retrying ? ' · retrying…' : ' · streaming…'
     const body = entry.text
       ? Markdown({ text: entry.text })
       : Text({ dimColor: true, italic: true, children: 'Translating…' })
-    if (s.layout === 'below') {
-      return Box({
-        flexDirection: 'column',
-        children: [
-          drawn,
-          Box({
-            flexDirection: 'column',
-            marginLeft: 2,
-            marginTop: 1,
-            paddingX: 1,
-            borderStyle: 'round',
-            borderDimColor: true,
-            children: [Text({ dimColor: true, children: 'Translation' + state }), body],
-          }),
-        ],
-      })
-    }
-    const rule = '─── ' + translationLabel(s.language) + state + ' ───'
     return Box({
       flexDirection: 'column',
-      paddingX: 1,
-      borderStyle: 'round',
-      borderDimColor: true,
-      children: [drawn, Text({ dimColor: true, children: rule }), body],
+      children: [
+        drawn,
+        Box({
+          flexDirection: 'column',
+          marginLeft: 2,
+          marginTop: 1,
+          paddingX: 1,
+          borderStyle: 'round',
+          borderDimColor: true,
+          children: [Text({ dimColor: true, children: 'Translation' + state }), body],
+        }),
+      ],
     })
   })
 
