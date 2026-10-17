@@ -20,7 +20,7 @@ Two panels for Claude Code. The transcript keeps the conversation: your prompts 
 - Under each prompt that had tool calls, a line sums up the work. Click it to show that turn in the pane; click again, or scroll to another turn, and the pane follows the transcript again.
 - In the pane, click a tool call to see its input (edits as −/+ lines) and the start of its output. ◄ ► (`p` / `n` while the pane has focus) step through turns.
 - A text block Claude writes before a tool call is a note and goes to the pane; the last text of a turn is the answer and stays in the transcript. Questions Claude asks you (`AskUserQuestion`) and plans to approve stay in the transcript too.
-- `/qa-split off` puts everything back in the transcript; so does closing the pane. `/qa-split` turns it on again.
+- `/qa-split off` puts everything back in the transcript; so does closing the pane. `/qa-split` turns it on again, and so does the **Details pane** switch in the mods pane (`/mods`, from the mod-settings plugin).
 
 The pane docks beside the transcript in the fullscreen terminal. Opened at the start of a session it needs 144 columns; `/qa-split` opens it from 110. Narrower, or on the main screen, it sits above the prompt.
 

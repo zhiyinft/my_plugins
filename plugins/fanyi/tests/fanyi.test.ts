@@ -177,16 +177,16 @@ test('the classic layout draws the reply as is, with the translation boxed under
   expect(bilingual).toContain('  译文：ok')
 })
 
-test('the "Translation only" layout draws the translation in the reply\'s place; 译文 | 原文 above the prompt shows every original, dimmed, and hides them again', { options: { api_key: 'k' } }, async ($, on) => {
+test('the "Translation only" layout draws the translation in the reply\'s place; 译|原 in the badge shows every original, dimmed, and hides them again', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   translator(on)
   const kept = store(on)
   asReply(on)
   on('ui.render', { component: 'Pane' }, async ($, e) => $.ui.resolve(e).Box({}))
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => $.ui.resolve(e).Box({}))
-  const band = () => $.ui.render({ component: 'AbovePrompt', surface: 'terminal', props: { hasSurvey: false, isWorking: false } } as any)
+  on('ui.render', { component: 'SessionMode' }, async ($, e) => $.ui.resolve(e).Box({}))
+  const band = () => $.ui.render({ component: 'SessionMode', surface: 'terminal', props: { modes: [] } } as any)
   // The switch is only there in this layout
-  expect(shows(await band(), '原文')).toBe(false)
+  expect(shows(await band(), '原')).toBe(false)
   await pane($)
   await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-layout', value: 'translated' })
   expect((kept.get('settings') as any).layout).toBe('translated')
@@ -203,7 +203,7 @@ test('the "Translation only" layout draws the translation in the reply\'s place;
   expect(hidden).not.toContain('borderStyle')
   expect(hidden).not.toContain('Button')
   // One click on the switch shows every original, dimmed, under its translation
-  expect(shows(await band(), '原文')).toBe(true)
+  expect(shows(await band(), '原')).toBe(true)
   await ($.ui as any).press({ plugin: 'fanyi', key: 'fanyi-originals' })
   expect((kept.get('settings') as any).originals).toBe(true)
   const open = JSON.stringify(await draw($, text))
@@ -300,16 +300,26 @@ test('a resumed session drawing replies before the translator has connected wait
   expect((calls as any).logged).toEqual([])
 })
 
-test('the toggle above the prompt shows On or Off and switches when pressed', { options: { api_key: 'k' } }, async ($, on) => {
+test('the mods pane and the badge mark switch translation off and on; the mark dims while off, and nothing is drawn above the prompt', { options: { api_key: 'k' } }, async ($, on) => {
   translator(on)
   const kept = store(on)
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e) => $.ui.resolve(e).Box({}))
+  on('ui.render', async ($, e) => $.ui.resolve(e).Box({}))
   const band = () => $.ui.render({ component: 'AbovePrompt', surface: 'terminal', props: { hasSurvey: false, isWorking: false } } as any)
-  expect(shows(await band(), '"On"')).toBe(true)
-  await ($.ui as any).press({ plugin: 'fanyi', key: 'fanyi-toggle' })
+  const badge = () => $.ui.render({ component: 'SessionMode', surface: 'terminal', props: { modes: [] } } as any)
+  const mods = () => $.ui.render({ component: 'Pane', surface: 'terminal', requestId: 'mod-settings', props: { title: 'Mods', isFocused: true } } as any)
+  expect(shows(await band(), 'Fanyi')).toBe(false)
+  expect(shows(await badge(), '"color":"cyan"')).toBe(true)
+  expect(shows(await mods(), 'Fanyi')).toBe(true)
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-mods-enabled', value: 'off' })
   expect((kept.get('settings') as any)?.enabled).toBe(false)
-  expect(shows(await band(), '"Off"')).toBe(true)
+  expect(shows(await badge(), '"dimColor":true')).toBe(true)
+  // A click on the mark switches it back on
   await ($.ui as any).press({ plugin: 'fanyi', key: 'fanyi-toggle' })
+  expect((kept.get('settings') as any)?.enabled).toBe(true)
+  await mods()
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-mods-enabled', value: 'off' })
+  expect((kept.get('settings') as any)?.enabled).toBe(false)
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-mods-enabled', value: 'on' })
   expect((kept.get('settings') as any)?.enabled).toBe(true)
 })
 

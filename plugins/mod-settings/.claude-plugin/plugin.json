@@ -1,0 +1,15 @@
+{
+  "name": "mod-settings",
+  "version": "1.0.0",
+  "description": "One settings entry for the mods in my-plugins: a small badge at the right of the prompt footer with each mod's state, and a pane (/mods) with their switches.",
+  "author": {
+    "name": "zhiyinft"
+  },
+  "keywords": [
+    "mod",
+    "settings",
+    "pane",
+    "function-hooks"
+  ],
+  "types": "./types/index.d.ts"
+}

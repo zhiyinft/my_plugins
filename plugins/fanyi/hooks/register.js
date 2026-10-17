@@ -691,6 +691,8 @@ const originalLabel = (language) => languageWord(language, 3, 'Original')
 // one for "translation", an arrow otherwise
 const replyMark = (language) => ({ 'zh-Hans': '译', 'zh-Hant': '譯', ja: '訳' })[language] || '↳'
 const MARK_COLOR = 'cyan'
+// The pane the mods share for their switches, opened by mod-settings (/mods)
+const MODS_PANE = 'mod-settings'
 // Whether Apple's on-device engine can run here: null until the translator has been asked
 let appleCaps = null
 // The API key's state, { isSet, source, hint }: null until asked
@@ -841,48 +843,88 @@ export function register(on, options = {}) {
     return { text: value ? 'Fanyi on: prompts in your language are translated to English, replies get a translation.' : 'Fanyi off: prompts are sent as typed, replies are not translated.' }
   })
 
-  // A one-line toggle above the prompt: "Fanyi ● On · ⚙", clicked or pressed. With the
-  // "Translation only" layout it also holds the switch for the originals: "译文 | 原文", one
-  // button, the side in effect bold.
-  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+  // Its segment of the mods' badge at the right of the prompt footer (see mod-settings): the
+  // mark, a click switching translation on and off; in color while on, dim while off. With the
+  // "Translation only" layout a second mark, 原, switches the originals, bold while shown.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const drawn = await next(e)
-    if (e.props.hasSurvey) return drawn
     const s = await getSettings($)
-    const isOn = s.enabled
     const { Box, Text, Button } = $.ui.resolve(e)
-    const side = (label, isActive) => Text({ bold: isActive, color: isActive ? MARK_COLOR : undefined, dimColor: !isActive, children: label })
+    const toggle = Button({
+      key: 'fanyi-toggle',
+      label: s.enabled ? 'Turn translation off' : 'Turn translation on',
+      plain: true,
+      onPress: () => updateSettings($, { enabled: !s.enabled }),
+      children: [Text({ color: s.enabled ? MARK_COLOR : undefined, dimColor: !s.enabled, children: replyMark(s.language) })],
+    })
     const originals =
-      isOn && s.layout === 'translated'
+      s.enabled && s.layout === 'translated'
         ? [
-            Text({ dimColor: true, children: '·' }),
             Button({
               key: 'fanyi-originals',
               label: s.originals ? 'Hide the originals' : 'Show the originals',
               plain: true,
               onPress: () => updateSettings($, { originals: !s.originals }),
-              children: [side(translationLabel(s.language), !s.originals), Text({ dimColor: true, children: ' | ' }), side(originalLabel(s.language), s.originals)],
+              children: [Text({ bold: s.originals, color: s.originals ? MARK_COLOR : undefined, dimColor: !s.originals, children: [...originalLabel(s.language)][0] })],
             }),
           ]
         : []
-    const toggle = Box({
-      flexDirection: 'row',
-      gap: 1,
+    const segment = Box({ flexDirection: 'row', children: [toggle, ...originals] })
+    return drawn ? Box({ flexDirection: 'row', gap: 1, children: [segment, drawn] }) : segment
+  })
+
+  // Its section of the mod settings pane (/mods, or ⚙ in the badge): the switches used day to
+  // day; "More…" opens the full settings pane.
+  on('ui.render', { component: 'Pane', requestId: MODS_PANE }, async ($, e, next) => {
+    const drawn = await next(e)
+    const s = await getSettings($)
+    const { Box, Text, Select, Button } = $.ui.resolve(e)
+    const section = Box({
+      flexDirection: 'column',
+      marginBottom: 1,
       children: [
-        Text({ dimColor: true, children: 'Fanyi' }),
-        Text({ color: isOn ? 'green' : undefined, dimColor: !isOn, children: isOn ? '●' : '○' }),
-        Button({
-          key: 'fanyi-toggle',
-          label: isOn ? 'On' : 'Off',
-          plain: true,
-          dimColor: !isOn,
-          onPress: () => updateSettings($, { enabled: !isOn }),
+        Text({ bold: true, children: 'Fanyi' }),
+        Select({
+          key: 'fanyi-mods-enabled',
+          label: 'Translation',
+          value: s.enabled ? 'on' : 'off',
+          options: [
+            { value: 'on', label: 'On' },
+            { value: 'off', label: 'Off' },
+          ],
+          onSelect: (v) => updateSettings($, { enabled: v === 'on' }),
         }),
-        ...originals,
-        Text({ dimColor: true, children: '·' }),
-        Button({ key: 'fanyi-settings', label: '⚙', plain: true, dimColor: true, onPress: () => openSettings($) }),
+        Select({
+          key: 'fanyi-mods-layout',
+          label: 'Layout',
+          value: s.layout,
+          options: [
+            { value: 'bilingual', label: 'Bilingual' },
+            { value: 'translated', label: 'Translation only' },
+            { value: 'below', label: 'Classic box' },
+          ],
+          onSelect: (v) => updateSettings($, { layout: v }),
+        }),
+        ...(s.layout === 'translated'
+          ? [
+              Select({
+                key: 'fanyi-mods-originals',
+                label: 'Show',
+                value: s.originals ? 'original' : 'translation',
+                options: [
+                  { value: 'translation', label: translationLabel(s.language) },
+                  { value: 'original', label: translationLabel(s.language) + ' + ' + originalLabel(s.language) },
+                ],
+                onSelect: (v) => updateSettings($, { originals: v === 'original' }),
+              }),
+            ]
+          : []),
+        Button({ key: 'fanyi-mods-more', label: 'More fanyi settings…', plain: true, dimColor: true, onPress: () => openSettings($) }),
       ],
     })
-    return drawn ? Box({ flexDirection: 'column', children: [toggle, drawn] }) : toggle
+    // Before what is beneath, as the badge's segments are, so mod-settings's own rows and its
+    // Close stay last whichever order the mods load in
+    return drawn ? Box({ flexDirection: 'column', children: [section, drawn] }) : section
   })
 
   // The settings pane: one picker per setting, applied as soon as it's picked

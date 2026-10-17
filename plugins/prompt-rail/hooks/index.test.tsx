@@ -67,7 +67,7 @@ const drawPrompts = async ($: any, on: any) => {
   mock.store(on)
   on('config.set', ($: any, e: any) => ({ value: e.value }))
   on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.close', () => ({}))
+  on('ui.close', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))
   await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'UserMessage', requestId: 'm1', props: prompt('first prompt', null) })
   await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'UserMessage', requestId: 'm2', props: prompt('second prompt', { first: 0, last: 3, of: 4 }) })
@@ -97,17 +97,17 @@ test('wide characters are cut by the cells they take', async ($, on) => {
   expect((await rail.findAll({ type: 'Button' })).map(b => b.props.label)[2]).toBe(' ─ 日本語…')
 })
 
-test('/prompt-rail horizontal draws a text line over one row of bars, heavy where being read', async ($, on) => {
+test('/prompt-rail horizontal draws one row: the bars, heavy where being read, then the text line', async ($, on) => {
   await drawPrompts($, on)
   await $.command.run({ command: 'prompt-rail', args: 'horizontal' })
   const band = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'AbovePrompt', props: BAND })
   // One bar per prompt, the one on screen heavy.
   expect((await band.findAll({ type: 'Button' })).map(b => b.props.label)).toEqual(['│', '┃'])
-  // The text line, above the bars, shows the prompt on screen until a bar is hovered.
+  // The text line, after the bars, shows the prompt on screen until a bar is hovered.
   const drawn = await band.findAll({})
   const line = drawn.findIndex((node: any) => node.type === 'Text' && /^#2 second prompt$/.test(String(node.text)))
-  expect(line).toBeGreaterThanOrEqual(0)
-  expect(line).toBeLessThan(drawn.findIndex((node: any) => node.type === 'Button'))
+  expect(line).toBeGreaterThan(drawn.findIndex((node: any) => node.type === 'Button'))
+  expect(drawn[0]?.props.flexDirection).toBe('row')
   expect((await band.find({ key: 'card-0' }))?.props.display).toBe('none')
   expect((await band.press({ key: 'jump-0' }))?.element).toBe('jump-0')
 })
@@ -1032,7 +1032,7 @@ const overflowBand = async ($: any, on: any, reading: number) => {
     const onScreen = i === reading ? { first: 0, last: 1, of: 2 } : null
     await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'UserMessage', requestId: `p${i}`, props: prompt(`prompt ${i}`, onScreen) })
   }
-  const band = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 14 } })
+  const band = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 27 } })
   const lower = (await band.findAll({ type: 'Button' })).map((b: any) => String(b.props.key)).filter((key: string) => /^jump-\d+$/.test(key))
   const marks = (await band.findAll({ type: 'Text' })).map((t: any) => t.text).filter((text: string) => text === '‹' || text === '›')
   return { lower, marks }
@@ -1449,7 +1449,8 @@ test('a narrow band keeps room for the details by cutting the prompt first', asy
   ]))
   await $.classic.SessionStart({ source: 'resume', session_id: 's1', transcript_path: '/t/s1.jsonl' })
   await $.command.run({ command: 'prompt-rail', args: 'horizontal' })
-  const band = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 40 } })
+  // One bar and a gap beside the text line.
+  const band = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'AbovePrompt', props: { ...BAND, bodyColumns: 42 } })
   // Thirty-six cells: `#1 `, the text cut to 28, then ` · 9s`.
   const card = await band.find({ type: 'Text', text: /^#1 a prompt far too long to fi… · 9s\s*$/ })
   expect(card).toBeDefined()
@@ -2019,4 +2020,19 @@ test('rows that left untold are dropped even while reports never pause', async (
     if (at === 150) await u3.redraw(prompt('continue', { first: 0, last: 1, of: 2 }))
   }
   expect(await heavyIn(band)).toBe(2)
+})
+
+test('the badge counts the prompts, and the mods pane switches the rail\'s mode', async ($, on) => {
+  on('ui.render', { component: 'SessionMode' }, ($: any, e: any) => $.ui.resolve(e).Box({}))
+  on('ui.render', { component: 'Pane', requestId: 'mod-settings' }, ($: any, e: any) => $.ui.resolve(e).Box({}))
+  await drawPrompts($, on)
+  await $.command.run({ command: 'prompt-rail', args: 'horizontal' })
+  const badge = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'SessionMode', props: { modes: [] } })
+  expect(await badge.find({ type: 'Text', text: '┃2' })).toBeDefined()
+  const mods = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'Pane', requestId: 'mod-settings', props: { title: 'Mods', isFocused: true } as any })
+  expect(await mods.find({ type: 'Text', text: ' · 2 prompts' })).toBeDefined()
+  await mods.select({ key: 'mods-mode', value: 'off' })
+  expect((await badge.find({ type: 'Text', text: '┃2' }))?.props.dimColor).toBe(true)
+  const band = await $.ui.mount({ plugin: 'prompt-rail', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+  expect(await band.findAll({ type: 'Button' })).toEqual([])
 })

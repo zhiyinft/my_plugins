@@ -239,3 +239,16 @@ test('/qa-split off puts every row back on the left', async ($, on) => {
   const note = await $.ui.mount({ plugin: 'qa-split', surface: 'terminal', component: 'AssistantMessage', requestId: NOTE, props: { text: 'Let me read the band code.', isFirstOfReply: true } })
   expect(await note.find({ type: 'Text', text: 'Let me read the band code.' })).toBeDefined()
 })
+
+test('the mods pane turns the split off and on', async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'mod-settings' }, ($: any, e: any) => $.ui.resolve(e).Box({}))
+  await setUp($, on)
+  const mods = await $.ui.mount({ plugin: 'qa-split', surface: 'terminal', component: 'Pane', requestId: 'mod-settings', props: { title: 'Mods', isFocused: true } as any })
+  expect((await mods.find({ key: 'mods-split' }))?.props.value).toBe('on')
+  await mods.select({ key: 'mods-split', value: 'off' })
+  expect((await mods.find({ key: 'mods-split' }))?.props.value).toBe('off')
+  const note = await $.ui.mount({ plugin: 'qa-split', surface: 'terminal', component: 'AssistantMessage', requestId: NOTE, props: { text: 'Let me read the band code.', isFirstOfReply: true } })
+  expect(await note.find({ type: 'Text', text: 'Let me read the band code.' })).toBeDefined()
+  await mods.select({ key: 'mods-split', value: 'on' })
+  expect((await mods.find({ key: 'mods-split' }))?.props.value).toBe('on')
+})

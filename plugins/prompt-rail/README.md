@@ -21,7 +21,7 @@ Start a new session and the rail opens on its own.
 
 | Command | |
 | --- | --- |
-| `/prompt-rail horizontal` | Bars above the prompt input (the default) |
+| `/prompt-rail horizontal` | One row above the prompt input: the bars, then the prompt being read (the default) |
 | `/prompt-rail vertical` | A pane beside the transcript |
 | `/prompt-rail off` | Hide the rail |
 | `/prompt-rail next`, `prev` | Jump to the next or previous prompt |
@@ -33,6 +33,8 @@ Start a new session and the rail opens on its own.
 | `/prompt-rail` | Reopen the rail in the current layout |
 
 The layout is also the "Rail mode" row in `/config`, and it is kept across sessions.
+
+The badge at the right of the prompt footer counts the prompts (`┃12`, dim while the rail is off), and the mods pane (`/mods`, from the mod-settings plugin) switches the mode.
 
 In the horizontal layout, `ctrl+x tab` moves the focus to the bars: `←` `→` move across them, `Enter` jumps to the prompt, `Esc` returns to the prompt input.
 

@@ -1,6 +1,8 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 const PANE = 'prompt-rail'
+// The pane the mods share for their switches, opened by mod-settings (/mods).
+const MODS_PANE = 'mod-settings'
 // Rows the person typed (terminal composer, desktop/remote bridge, SDK host).
 const PROMPT_KINDS = new Set(['composer', 'bridge', 'sdk'])
 // Columns the docked rail asks for: a tick and a little air.
@@ -1497,6 +1499,66 @@ export const register: Register = (on, options) => {
     )
   })
 
+  // Its segment of the mods' badge at the right of the prompt footer (see
+  // mod-settings): how many prompts the rail lists, dim while it is off.
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    await $.state.get(MOVED)
+    const drawn = await next(e)
+    if (entries.length === 0) return drawn
+    const { Box, Text } = $.ui.resolve(e)
+    const segment = <Text dimColor={mode === 'off'}>{`${bar(true)}${entries.length}`}</Text>
+    return drawn ? (
+      <Box flexDirection="row" gap={1}>
+        {segment}
+        {drawn}
+      </Box>
+    ) : (
+      segment
+    )
+  })
+
+  // Its section of the mod settings pane (/mods): the rail's mode and how many
+  // prompts it lists. Before what is beneath, so mod-settings's Close stays last.
+  on('ui.render', { component: 'Pane', requestId: MODS_PANE }, async ($, e, next) => {
+    await $.state.get(MOVED)
+    const drawn = await next(e)
+    const { Box, Text, Select } = $.ui.resolve(e)
+    const section = (
+      <Box flexDirection="column" marginBottom={1}>
+        <Text>
+          <Text bold>Prompt rail</Text>
+          <Text dimColor>{` · ${entries.length} ${entries.length === 1 ? 'prompt' : 'prompts'}`}</Text>
+        </Text>
+        <Select
+          key="mods-mode"
+          label="Rail"
+          value={mode}
+          options={[
+            { value: 'horizontal', label: 'Above the prompt' },
+            { value: 'vertical', label: 'Beside the transcript' },
+            { value: 'off', label: 'Off' },
+          ]}
+          onSelect={async value => {
+            if (!isMode(value)) return
+            // As /prompt-rail <mode> does it: at once, then the setting.
+            mode = value
+            await seatRail($, mode, isTerminal)
+            await redrawRail($)
+            await writeMode($, value)
+          }}
+        />
+      </Box>
+    )
+    return drawn ? (
+      <Box flexDirection="column">
+        {section}
+        {drawn}
+      </Box>
+    ) : (
+      section
+    )
+  })
+
   // The band above the prompt. Horizontal: the rail itself, a
   // row of ticks with the hovered prompt beside them. Vertical with a dock too
   // narrow to reveal beside a tick: hidden cards the rail's ticks reveal.
@@ -1515,9 +1577,9 @@ export const register: Register = (on, options) => {
       ))
 
     if (mode === 'horizontal') {
-      // Two rows: the text line, then the bars beside the prompt. The text line
-      // shows the prompt being read, dim, and the hovered one's card painted
-      // over it; the bar of the prompt being read is heavy.
+      // One row on the terminal: the bars, then the text line beside them. The
+      // text line shows the prompt being read, dim, and the hovered one's card
+      // painted over it; the bar of the prompt being read is heavy.
       //
       // Only the terminal's grid of cells hides the dim line under a card. A
       // page (the desktop app) paints a card with no background, in a face of
@@ -1531,9 +1593,10 @@ export const register: Register = (on, options) => {
       const current = currentIndex()
       drawnCurrent = current
       const shownRing = isCellGrid && ringed !== undefined && ringed < entries.length ? ringed : undefined
-      // Cells for the bars and their marks: the whole line, or beside the
-      // label of the prompt being read, a gap and a few words of it.
-      const barCells = isCellGrid ? width : Math.max(MIN_DESKTOP_BARS, width - 1 - MIN_CARD_TEXT)
+      // Cells for the bars and their marks, beside a gap and the text line: on
+      // the terminal half the row is kept for it, so a card has room to read.
+      const minText = isCellGrid ? Math.max(MIN_CARD_TEXT, Math.floor(width / 2)) : MIN_CARD_TEXT
+      const barCells = Math.max(MIN_DESKTOP_BARS, width - 1 - minText)
       // More prompts than cells: a window of bars centered on the prompt being
       // read (the newest when none is known), `‹` and `›` marking what it hides.
       // It stays put while the ring moves: the ring keeps its place in the row,
@@ -1546,9 +1609,9 @@ export const register: Register = (on, options) => {
       const hidesAfter = first + capacity < entries.length
       const label = (i: number, room = width) => `#${i + 1} ${oneLine(entries[i]?.text ?? '', room - `#${i + 1} `.length)}`
       // The hovered prompt's card also sums up its turn.
-      const card = (i: number) => {
+      const card = (i: number, room = width) => {
         const entry = entries[i]
-        return entry ? `#${i + 1} ${withTurn(entry, width - `#${i + 1} `.length)}` : ''
+        return entry ? `#${i + 1} ${withTurn(entry, room - `#${i + 1} `.length)}` : ''
       }
       const bars = [
         isOverflowing ? <Text dimColor>{first > 0 ? '‹' : ' '}</Text> : null,
@@ -1568,9 +1631,9 @@ export const register: Register = (on, options) => {
         }),
         hidesAfter ? <Text dimColor>›</Text> : null,
       ]
+      // Each bar and mark a cell wide, then a gap.
+      const room = width - (isOverflowing ? barCells : entries.length) - 1
       if (!isCellGrid) {
-        // Each bar and mark a cell wide, then a gap.
-        const room = width - (isOverflowing ? barCells : entries.length) - 1
         return (
           <Box flexDirection="column" paddingLeft={RAIL_INSET}>
             <Box height={1} width={width}>
@@ -1591,17 +1654,17 @@ export const register: Register = (on, options) => {
         )
       }
       return (
-        <Box flexDirection="column" paddingLeft={RAIL_INSET}>
-          <Box height={1} width={width}>
-            {/* With no prompt known on screen, the newest: an empty line reads as a broken rail. */}
-            {shownRing === undefined ? <Text dimColor wrap="truncate-end">{label(center)}</Text> : <Text wrap="truncate-end">{padTo(card(shownRing), width)}</Text>}
+        <Box flexDirection="row" paddingLeft={RAIL_INSET}>
+          {bars}
+          <Box marginLeft={1} height={1} width={room}>
+            {/* With no prompt known on screen, the newest: bars alone read as a broken rail. */}
+            {shownRing === undefined ? <Text dimColor wrap="truncate-end">{label(center, room)}</Text> : <Text wrap="truncate-end">{padTo(card(shownRing, room), room)}</Text>}
             {entries.map((_, i) => (
               <Box key={`card-${i}`} position="absolute" top={0} left={0} display="none" hover={{ scope: `prompt-rail-${i}`, display: 'flex' }}>
-                <Text wrap="truncate-end">{padTo(card(i), width)}</Text>
+                <Text wrap="truncate-end">{padTo(card(i, room), room)}</Text>
               </Box>
             ))}
           </Box>
-          <Box flexDirection="row">{bars}</Box>
         </Box>
       )
     }

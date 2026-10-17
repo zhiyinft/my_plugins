@@ -35,6 +35,8 @@ declare module 'claude-code' {
 }
 
 const PANE = 'qa-split'
+// The pane the mods share for their switches, opened by mod-settings (/mods).
+const MODS_PANE = 'mod-settings'
 const TITLE = 'Details'
 // The share of the terminal the pane asks for when docked.
 const SHARE = 0.45
@@ -231,6 +233,17 @@ function noteOnScreen($: EngineInterface, component: string, requestId: string, 
 async function holdTurn($: EngineInterface, id: string | null) {
   pinnedAt = await $.clock.now()
   await update($, pinnedAtom, () => id)
+}
+
+// Off: the details go back into the transcript.
+async function turnOff($: EngineInterface) {
+  await update($, modeAtom, mode => ({ ...mode, isOff: true, isShown: false }))
+  await $.ui.close({ id: PANE })
+}
+
+async function turnOn($: EngineInterface) {
+  await update($, modeAtom, mode => ({ ...mode, isOff: false }))
+  return openPane($)
 }
 
 async function openPane($: EngineInterface) {
@@ -592,11 +605,44 @@ export const register: Register = on => {
     return drawPane($, e, turns, turn, steps, pinned, open, await styledNotes($, e, steps))
   })
 
+  // Its section of the mod settings pane (/mods). Before what is beneath, so
+  // mod-settings's Close stays last.
+  on('ui.render', { component: 'Pane', requestId: MODS_PANE }, async ($, e, next) => {
+    const drawn = await next(e)
+    const mode = await read($, modeAtom)
+    const { Box, Text, Select } = $.ui.resolve(e)
+    const section = (
+      <Box flexDirection="column" marginBottom={1}>
+        <Text bold>QA split</Text>
+        <Select
+          key="mods-split"
+          label="Details pane"
+          value={mode.isOff ? 'off' : 'on'}
+          options={[
+            { value: 'on', label: 'On: tool calls beside the transcript' },
+            { value: 'off', label: 'Off: everything in the transcript' },
+          ]}
+          onSelect={async value => {
+            if (value === 'off') await turnOff($)
+            else await turnOn($)
+          }}
+        />
+      </Box>
+    )
+    return drawn ? (
+      <Box flexDirection="column">
+        {section}
+        {drawn}
+      </Box>
+    ) : (
+      section
+    )
+  })
+
   on('command.run', { command: 'qa-split' }, async ($, e) => {
     const arg = e.args.trim().toLowerCase()
     if (arg === 'off') {
-      await update($, modeAtom, mode => ({ ...mode, isOff: true, isShown: false }))
-      await $.ui.close({ id: PANE })
+      await turnOff($)
       return { text: 'qa-split is off: tool calls and notes show in the transcript again. /qa-split turns it back on.' }
     }
     if (arg === 'debug') {
@@ -610,8 +656,7 @@ export const register: Register = on => {
       }
     }
     if (arg !== '' && arg !== 'on') return { text: 'Usage: /qa-split [on|off]' }
-    await update($, modeAtom, mode => ({ ...mode, isOff: false }))
-    const placed = await openPane($)
+    const placed = await turnOn($)
     return {
       text: placed.isPlaced
         ? 'qa-split is on: the conversation stays here, the work behind each answer is in the Details pane.'

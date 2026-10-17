@@ -24,6 +24,11 @@
       "name": "qa-split",
       "source": "./plugins/qa-split",
       "description": "Your prompts and Claude's answers in the transcript; tool calls, notes and thinking in a Details pane beside it that follows your scrolling."
+    },
+    {
+      "name": "mod-settings",
+      "source": "./plugins/mod-settings",
+      "description": "One settings entry for these mods: a badge at the right of the prompt footer with each mod's state, and a pane (/mods) with their switches."
     }
   ]
 }
