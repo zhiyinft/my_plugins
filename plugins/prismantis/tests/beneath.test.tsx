@@ -1,7 +1,7 @@
 import type { On, RenderElement, RenderNode } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { inPlaceOfEngine, isDrawnAway } from '../hooks/beneath'
+import { inPlaceOfEngine, isDrawnAway, placeIn } from '../hooks/beneath'
 
 // Stands in for a mod beneath prismantis that takes rows off the transcript,
 // as qa-split does for the tool rows and notes it moves to its pane.
@@ -51,4 +51,26 @@ test('prismantis draws in place of Claude Code\'s own drawing, keeping what a mo
   expect(isDrawnAway(box([text('x')]))).toBe(false)
   expect(isDrawnAway(engineNode)).toBe(false)
   expect(isDrawnAway(undefined)).toBe(false)
+})
+
+// Claude Code's drawing number `ref`, and the engine's link of a trace that drew it with `props`.
+const drawing = (ref: number) => ({ type: 'engine', ref }) as unknown as RenderElement
+const core = (ref: number, props: unknown) => ({ tier: 'core', received: { component: 'AssistantMessage', props }, returned: drawing(ref) })
+const row = { text: 'It redraws on every tick.', isFirstOfReply: true }
+const translated = { text: '每次计时都会重绘。', isFirstOfReply: false }
+
+test('a drawing of props a mod beneath rewrote is left as drawn: fanyi\'s translation is not replaced by the original', () => {
+  // Bilingual: the original drawn with the row's props, the translation with rewritten ones.
+  const bilingual = box([drawing(1), box([drawing(2), text('译')])])
+  expect(placeIn(bilingual, row, [core(1, row), core(2, translated)])(own)).toEqual(box([own, box([drawing(2), text('译')])]))
+  // Translation only: the one drawing is of the translation.
+  expect(placeIn(drawing(3), row, [core(3, translated)])(own)).toEqual(drawing(3))
+  // The row's own props, whatever order their keys come in and with a key holding undefined.
+  expect(placeIn(drawing(4), { isFirstOfReply: true, text: row.text, isSummary: undefined }, [core(4, row)])(own)).toBe(own)
+  // A drawing the trace does not list: the row's own when it is the only one, of several none.
+  expect(placeIn(box([drawing(5), text('under')]), row, [])(own)).toEqual(box([own, text('under')]))
+  const twice = box([box([drawing(6)]), box([drawing(7)])])
+  expect(placeIn(twice, row, [])(own)).toBe(twice)
+  // Nothing beneath (a test with no stand-in for the engine): prismantis's alone.
+  expect(placeIn(undefined, row, [])(own)).toBe(own)
 })

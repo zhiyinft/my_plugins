@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PromptOrigin, Register, RenderElement, RenderSurface } from 'claude-code'
 
-import { inPlaceOfEngine, isDrawnAway } from './beneath'
+import { isDrawnAway, placeIn } from './beneath'
 import { clockText, endedAt, promptKey, sentAt, withRecord } from './clock'
 import type { Formula } from './latex'
 import { LATEX_DPR, LATEX_FONT_PX, fitsImage, keepFormulas, mathOf, padFor, pickFormula, pngSize, ratexColor, renderedOf } from './latex'
@@ -299,30 +299,33 @@ export const register: Register = (on, options) => {
         return next(e)
       }
       const beneath = await next(e).catch(() => undefined)
+      const place = placeIn(beneath, e.props, next.trace)
       if (isDrawnAway(beneath)) return beneath
       await locate($, style)
       for (const call of e.props.calls) noteCommand(call.tool_use_id, call.tool, call.input)
       if (quiet) for (const call of e.props.calls) if (call.tool_use_id && isReadOnlyCall(call.tool, call.input)) rememberCall(readOnlyCalls, call.tool_use_id)
-      return inPlaceOfEngine(beneath, renderToolGroup($.ui.resolve(e), fit(e.viewport), e.props.calls, e.props.isActive, e.viewport?.columns))
+      return place(renderToolGroup($.ui.resolve(e), fit(e.viewport), e.props.calls, e.props.isActive, e.viewport?.columns))
     })
     on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
       const beneath = await next(e).catch(() => undefined)
+      const place = placeIn(beneath, e.props, next.trace)
       if (isDrawnAway(beneath)) return beneath
       await locate($, style)
       noteCommand(e.props.tool_use_id, e.props.tool, e.props.input)
       if (quiet && isReadOnlyCall(e.props.tool, e.props.input)) rememberCall(readOnlyCalls, e.props.tool_use_id)
-      if (!expandedCalls.has(e.props.tool_use_id)) return inPlaceOfEngine(beneath, renderToolRow($.ui.resolve(e), fit(e.viewport), e.props, e.viewport?.columns))
+      if (!expandedCalls.has(e.props.tool_use_id)) return place(renderToolRow($.ui.resolve(e), fit(e.viewport), e.props, e.viewport?.columns))
       const shell = e.props.tool === 'Bash' || e.props.tool === 'PowerShell'
-      return shell && typeof e.props.output !== 'string' ? inPlaceOfEngine(beneath, renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props)) : (beneath ?? next(e))
+      return shell && typeof e.props.output !== 'string' ? place(renderExpandedShell($.ui.resolve(e), fit(e.viewport), e.props)) : (beneath ?? next(e))
     })
     on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
       const beneath = await next(e).catch(() => undefined)
+      const place = placeIn(beneath, e.props, next.trace)
       if (isDrawnAway(beneath)) return beneath
       const asIs = () => beneath ?? next(e)
       if ((e.props.tool === 'Edit' || e.props.tool === 'Write') && !e.props.isErrored) {
         const el = $.ui.resolve(e)
         const card = renderDiffCard(el, fit(e.viewport), e.props.output, folder($, el, await read($, unfolded)), e.props.tool_use_id)
-        return card ? inPlaceOfEngine(beneath, card) : asIs()
+        return card ? place(card) : asIs()
       }
       const edits = e.props.tool === 'Bash' && !e.props.isErrored ? bashEdits(e.props.output) : undefined
       if (edits) {
@@ -343,10 +346,10 @@ export const register: Register = (on, options) => {
       if (shell && (out.backgroundTaskId || out.isImage || out.interrupted)) return asIs()
       if (e.props.isErrored) {
         const failure = renderFailure(el, fit(e.viewport), e.props.output)
-        return failure ? inPlaceOfEngine(beneath, failure) : asIs()
+        return failure ? place(failure) : asIs()
       }
       if (readOnlyCalls.has(e.props.tool_use_id)) return <el.Box />
-      return shell ? inPlaceOfEngine(beneath, renderShellResult(el, fit(e.viewport), e.props.output)) : asIs()
+      return shell ? place(renderShellResult(el, fit(e.viewport), e.props.output)) : asIs()
     })
   }
 
@@ -439,14 +442,16 @@ export const register: Register = (on, options) => {
     const time = at === undefined ? undefined : clockText(at, await $.clock.now(), style.clock)
     if (style.promptStyle === 'off') return time === undefined ? next(e) : next({ ...e, props: { ...e.props, text: `[${time}] ${e.props.text}` } })
     const beneath = await next(e).catch(() => undefined)
+    const place = placeIn(beneath, e.props, next.trace)
     if (isDrawnAway(beneath)) return beneath
-    return inPlaceOfEngine(beneath, renderUserPrompt($.ui.resolve(e), fit(e.viewport), e.props.text, columnsOf(e.viewport), time))
+    return place(renderUserPrompt($.ui.resolve(e), fit(e.viewport), e.props.text, columnsOf(e.viewport), time))
   })
 
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     const blocks = parseCached(e.props.text)
     if (blocks.length === 0) return next(e)
     const beneath = await next(e).catch(() => undefined)
+    const place = placeIn(beneath, e.props, next.trace)
     if (isDrawnAway(beneath)) return beneath
     const el = $.ui.resolve(e)
     const { Box, Text } = el
@@ -455,9 +460,8 @@ export const register: Register = (on, options) => {
     const reach = await linkReach($, probes)
     const surfaceStyle = forSurface(fit(e.viewport), e.surface, reach)
     const open = await read($, unfolded)
-    return inPlaceOfEngine(
-      beneath,
-      <Box key="msg" flexDirection="row">
+    return place(
+            <Box key="msg" flexDirection="row">
         <Box width={2} flexShrink={0}>
           <Text color={style.theme.accent}>{e.props.isFirstOfReply ? '●' : ' '}</Text>
         </Box>
