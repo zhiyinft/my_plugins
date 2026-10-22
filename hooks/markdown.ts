@@ -6,8 +6,9 @@ export type Inline =
   | { kind: 'code'; text: string }
   | { kind: 'math'; text: string }
   | { kind: 'link'; text: string; href: string }
+  | { kind: 'image'; text: string; src: string }
   | { kind: 'number'; text: string }
-  | { kind: 'path'; text: string }
+  | { kind: 'path'; text: string; href?: string }
   | { kind: 'dim'; text: string }
   | { kind: 'footnote'; text: string; note?: number }
 
@@ -34,6 +35,10 @@ const ALERT = /^\[!(note|tip|important|warning|caution)\]\s*(.*)$/i
 
 export type Highlight = { numbers: boolean; paths: boolean }
 
+export const FIGURE_ROLES = ['accent', 'warn', 'ok', 'note', 'dim', 'strong'] as const
+
+const ROLE_MARKUP = new RegExp(`\\{(?:${FIGURE_ROLES.join('|')}):([^{}]*)\\}`, 'g')
+
 const MAX_INLINE = 4000
 const MAX_QUOTE_DEPTH = 8
 const QUOTE = /^\s*>/
@@ -41,6 +46,7 @@ const TABLE_SEP = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/
 const LIST_ITEM = /^(\s*)([-*+]|\d+[.)])\s+(.*)$/
 const FENCE = /^\s*(`{3,}|~{3,})\s*([\w+-]*)/
 const NOTE_DEF = /^\[\^([^\]\s]+)\]:\s*(.*)$/
+const TAG_LINE = /^\s*<\/?[a-z][\w-]*>\s*$/i
 const SUPERSCRIPT = '⁰¹²³⁴⁵⁶⁷⁸⁹'
 
 const splitRow = (line: string): string[] => {
@@ -63,11 +69,12 @@ const splitRow = (line: string): string[] => {
   return cells
 }
 
-const INLINE = /(`+)(?!`)(.+?)(?<!`)\1(?!`)|\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*(?!\s)((?:[^*]|\*[^*\s][^*]*?(?<!\s)\*)+?)(?<!\s)\*\*|(?<![\w_])__(?!\s)([^_]+?)(?<!\s)__(?![\w_])|~~([^~]+?)~~|(?<![\w*])\*([^*\s][^*]*?)(?<!\s)\*(?!\w)|(?<![\w_])_([^_\s][^_]*?)(?<!\s)_(?!\w)|(https?:\/\/(?:[^\s<>()]|\([^\s<>()]*\))*(?:[^\s<>().,;:!?'"]|\([^\s<>()]*\)))|(?<![\\$\w])\$(?=\S)((?:\\.|[^$\n\\])+?)(?<=\S)\$(?![\w$])|\[\^([^\]\s]+)\]/g
+const INLINE = /(`+)(?!`)(.+?)(?<!`)\1(?!`)|\[([^\]]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)|\*\*(?!\s)((?:[^*]|\*[^*\s][^*]*?(?<!\s)\*)+?)(?<!\s)\*\*|(?<![\w_])__(?!\s)([^_]+?)(?<!\s)__(?![\w_])|~~([^~]+?)~~|(?<![\w*])\*([^*\s][^*]*?)(?<!\s)\*(?!\w)|(?<![\w_])_([^_\s][^_]*?)(?<!\s)_(?!\w)|(https?:\/\/(?:[^\s<>()]|\([^\s<>()]*\))*(?:[^\s<>().,;:!?'"]|\([^\s<>()]*\)))|(?<![\\$\w])\$(?=\S)((?:\\.|[^$\n\\])+?)(?<=\S)\$(?![\w$])|\[\^([^\]\s]+)\]|!\[([^\]]*)\]\(((?:[^()\s]|\([^()\s]*\))+)\)/g
 const NUMBER = /(?<![\w.#/-])(v?\d+(?:[.,:]\d+)*(?:%|ms|s|m|h|d|Gi|Mi|GB|MB|KB|x)?)(?![\w/])/g
 const PATH = /(?<![\w/.:])((?:~|\.{1,2})?\/[\w.@+-]+(?:\/[\w.@+-]*)*)/g
 
-const decorate = (text: string, hl: Highlight): Inline[] => {
+const decorate = (raw: string, hl: Highlight): Inline[] => {
+  const text = raw.replace(ROLE_MARKUP, '$1')
   if (!hl.numbers && !hl.paths) return [{ kind: 'text', text }]
   const marks: { start: number; end: number; kind: 'number' | 'path' }[] = []
   if (hl.paths) for (const m of text.matchAll(PATH)) marks.push({ start: m.index, end: m.index + m[0].length, kind: 'path' })
@@ -105,6 +112,7 @@ export const parseInline = (text: string, hl: Highlight): Inline[] => {
     else if (m[10] !== undefined) out.push({ kind: 'link', text: m[10], href: m[10] })
     else if (m[11] !== undefined) out.push(...(isTex(m[11]) ? [{ kind: 'math' as const, text: texText(m[11]) }] : decorate(m[0], hl)))
     else if (m[12] !== undefined) out.push({ kind: 'footnote', text: m[12] })
+    else if (m[14] !== undefined) out.push({ kind: 'image', text: m[13] || 'image', src: m[14] })
     at = m.index + m[0].length
   }
   if (at < text.length) out.push(...decorate(text.slice(at), hl))
@@ -252,7 +260,7 @@ const numberNotes = (blocks: Block[], defs: Map<string, string>, hl: Highlight):
   return defs.size ? [...out, { kind: 'notes', notes, raw: '' }] : out
 }
 
-const CONTROL = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-_]?|[\u0000-\u0008\u000b-\u001f\u007f]/g
+export const CONTROL = /\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-_]?|[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g
 
 export const parse = (raw: string, hl: Highlight): Block[] => {
   const source = raw.replace(CONTROL, '')
@@ -293,6 +301,14 @@ const closerOf = (run: string) => new RegExp(`^\\s*\\${run[0]}{${run.length},}\\
 
 export const nestedBlocks = (blocks: Block[]): Block[] =>
   blocks.flatMap(b => [b, ...nestedBlocks(b.kind === 'list' ? b.items.flatMap(it => it.blocks ?? []) : b.kind === 'quote' || b.kind === 'alert' ? b.blocks : [])])
+
+const tableRows = (lines: string[], width: number, hl: Highlight): Inline[][][] => {
+  const end = lines.findIndex(l => !l.includes('|') || l.trim() === '')
+  return lines.slice(0, end < 0 ? lines.length : end).map(l => {
+    const cells = splitRow(l)
+    return Array.from({ length: width }, (_, c) => parseInline(cells[c] ?? '', hl))
+  })
+}
 
 const parseBlocks = (source: string, hl: Highlight, depth = 0): Block[] => {
   const lines = source.replace(/\r\n?/g, '\n').split('\n')
@@ -337,6 +353,11 @@ const parseBlocks = (source: string, hl: Highlight, depth = 0): Block[] => {
       while (/^\s{2,}\S/.test(at(i + 1))) i++
       continue
     }
+    if (TAG_LINE.test(line)) {
+      flush(i)
+      add({ kind: 'paragraph', inline: [{ kind: 'dim', text: line.trim() }] }, i, i + 1)
+      continue
+    }
     const heading = /^(#{1,6})\s+(.*?)(?:\s+#+)?\s*$/.exec(line)
     if (heading) {
       flush(i)
@@ -355,12 +376,8 @@ const parseBlocks = (source: string, hl: Highlight, depth = 0): Block[] => {
       const align = splitRow(at(i + 1)).map(c =>
         c.startsWith(':') && c.endsWith(':') ? 'center' : c.endsWith(':') ? 'right' : 'left',
       )
-      i += 2
-      const rows: Inline[][][] = []
-      while (i < lines.length && at(i).includes('|') && at(i).trim() !== '') {
-        const cells = splitRow(at(i++))
-        rows.push(header.map((_, c) => parseInline(cells[c] ?? '', hl)))
-      }
+      const rows = tableRows(lines.slice(i + 2), header.length, hl)
+      i += 2 + rows.length
       add({ kind: 'table', header: header.map(c => parseInline(c, { numbers: false, paths: false })), align, rows }, start, i)
       i--
       continue

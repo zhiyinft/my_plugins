@@ -1,9 +1,9 @@
 import type { ElementTable, RenderElement } from 'claude-code'
 
-import { graphemes, remember, width } from './render'
+import { cells, graphemes, heldLtr, mirrored, remember, width } from './render'
+import { FIGURE_ROLES } from './markdown'
+import { asIs, hasRtl, holdEngine, holdText, holdVisual, led } from './rtl'
 import type { Style, Theme } from './theme'
-
-export const FIGURE_ROLES = ['accent', 'warn', 'ok', 'note', 'dim', 'strong'] as const
 
 type FigureRole = (typeof FIGURE_ROLES)[number]
 
@@ -26,16 +26,16 @@ export const FIGURE_GLYPHS = '─│┌┐└┘├┤┬┴┼═║→←►�
 export const FIGURE_HINT = [
   'A fenced block whose opening line is exactly ```figure is drawn as a text picture, as written.',
   'Prefer one over mermaid when position carries meaning: durations racing on a time axis, a screen layout, phases, before/after; mermaid stays for plain flows and charts; none for short answers, code changes or reports. The prose never retells the picture.',
-  'When the user asks you to explain, compare or plan something and pictures would make it easier to grasp, build the reply around them, with the core on the first screen as a picture or a sentence.',
-  'Color with {role:text}, not nested: accent for lines, warn for risk, ok for healthy, note for time, dim for asides, strong for emphasis.',
-  `At most ${FIGURE_SAFE_COLUMNS} columns, glyphs one column wide such as ${FIGURE_GLYPHS}, no emoji or tabs; markup takes no columns, so align on the drawn text. Draw a time axis with edge ticks like ▏───▏───▏, not ├┼┤: █ fills its cell, ├┼┤ sit mid-cell.`,
+  'When asked to explain, compare or plan something and pictures would help, build the reply around them, with the core on the first screen as a picture or a sentence.',
+  'Figures only: color with {role:text}, not nested: accent for lines, warn for risk, ok for healthy, note for time, dim for asides, strong for emphasis.',
+  `At most ${FIGURE_SAFE_COLUMNS} columns, glyphs one column wide such as ${FIGURE_GLYPHS}, no emoji or tabs; markup takes no columns, so align on the drawn text and pad box rows to the top border. CJK letters take two columns, count them twice. Draw a time axis with edge ticks like ▏───▏───▏, not ├┼┤: █ fills its cell, ├┼┤ sit mid-cell.`,
 ].join(' ')
 
 const MARKUP = new RegExp(`\\{(${FIGURE_ROLES.join('|')}):([^{}]*)\\}`, 'g')
 const MARKER = /\{([A-Za-z][\w-]*):/g
 const TEXT_FORMS: Record<string, string> = { '▶': '►', '◀': '◄' }
 const ROLE_TOKENS: Record<FigureRole, keyof Theme> = { accent: 'diagram', warn: 'codeFlag', ok: 'codeString', note: 'heading', dim: 'codeComment', strong: 'strong' }
-const EMOJI_CAPABLE = /\p{Extended_Pictographic}/u
+const EMOJI_CAPABLE = /\p{Extended_Pictographic}|\p{Emoji_Presentation}|\u20e3/u
 const CONTROL = /[\0-\x08\x0b-\x1f\x7f-\x9f]/
 const DIRECTION_MARK = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
 const INVISIBLE = /[\u00ad\u200b-\u200d\u2028\u2029\ufeff]/
@@ -94,7 +94,6 @@ const lineMessages = (line: string): string[] => {
   const text = figureText(line)
   const glyphs = graphemes(text)
   const emoji = glyphs.filter(glyph => EMOJI_CAPABLE.test(glyph))
-  const wide = glyphs.filter(glyph => !EMOJI_CAPABLE.test(glyph) && width(glyph) === 2)
   const columns = width(text)
   return [
     ...(columns > FIGURE_MAX_COLUMNS ? [`${columns} columns wide, at most ${FIGURE_MAX_COLUMNS}`] : []),
@@ -103,7 +102,6 @@ const lineMessages = (line: string): string[] => {
     ...(DIRECTION_MARK.test(text) ? ['direction mark, use plain text'] : []),
     ...(INVISIBLE.test(text) ? ['invisible character, use plain text'] : []),
     ...(emoji.length ? [`${quoted(emoji)} may draw as an emoji, use a text glyph`] : []),
-    ...(wide.length ? [`${quoted(wide)} take two columns, use one-column glyphs`] : []),
     ...markupMessages(line),
   ]
 }
@@ -192,12 +190,28 @@ const runColor = (style: Style, role: FigureRole | undefined): string | undefine
 
 const isBold = (style: Style, role: FigureRole | undefined): boolean => role === 'strong' || (role === 'warn' && !runColor(style, 'warn'))
 
-const figureElement = ({ Box, Text }: ElementTable, style: Style, lines: readonly string[], key: string): RenderElement => (
-  <Box key={key} flexDirection="column" paddingLeft={2}>
-    {lines.map((line, i) => {
-      const runs = figureRuns(line)
+const heldRuns = (style: Style, runs: readonly FigureRun[]): FigureRun[] => {
+  const hold = !hasRtl(runs.map(run => run.text).join('')) ? null : mirrored(style) ? holdText : style.shape === 'engine' ? holdEngine : style.reorder && style.shape === 'visual' ? holdVisual : null
+  const chars = runs.flatMap(run => [...run.text])
+  const roles = runs.flatMap(run => [...run.text].map(() => run.role))
+  const base = hold ? hold(chars) : asIs(chars)
+  const { cells, from } = mirrored(style) ? led(chars, base) : base
+  const held: FigureRun[] = []
+  cells.forEach((ch, p) => {
+    const role = roles[from[p]!]
+    const last = held.at(-1)
+    if (last && last.role === role) last.text += ch
+    else held.push(role ? { text: ch, role } : { text: ch })
+  })
+  return held
+}
+
+const figureElement = ({ Box, Text }: ElementTable, style: Style, rows: readonly (readonly FigureRun[])[], key: string): RenderElement => (
+  <Box key={key} flexDirection="column" paddingLeft={mirrored(style) ? 0 : 2}>
+    {rows.map((row, i) => {
+      const runs = heldRuns(style, row)
       return (
-        <Text key={`${key}.${i}`}>
+        <Text key={`${key}.${i}`} {...heldLtr(style)}>
           {runs.length
             ? runs.map((run, r) => (
                 <Text key={`r${r}`} color={runColor(style, run.role)} bold={isBold(style, run.role)} dimColor={run.role === 'dim' && !style.theme.codeComment}>
@@ -211,13 +225,138 @@ const figureElement = ({ Box, Text }: ElementTable, style: Style, lines: readonl
   </Box>
 )
 
-type FigureDecision = { lines: readonly string[]; texts: readonly string[]; widest: number } | { note: string }
+type Cell = { glyph: string; role?: FigureRole }
+
+type Frame = { top: number; left: number; corner: number; edges: readonly number[] }
+
+const TOP_LEFT = '┌╔╭'
+const TOP_RIGHT = '┐╗╮'
+const BOTTOM_LEFT = '└╚╰'
+const BOTTOM_RIGHT = '┘╝╯'
+const SIDE = '│║├┤┼╟╢╠╣'
+const RULE = '─═'
+const MAX_REFRAMES = 200
+
+const isOf = (set: string, glyph: string | undefined): boolean => !!glyph && set.includes(glyph)
+
+const cellsOf = (runs: readonly FigureRun[]): Cell[] => runs.flatMap(run => cells(run.text).map(glyph => ({ glyph, role: run.role })))
+
+const runsOf = (row: readonly Cell[]): FigureRun[] =>
+  row.reduce<FigureRun[]>((runs, cell) => {
+    const last = runs.at(-1)
+    if (last && last.role === cell.role) last.text += cell.glyph
+    else runs.push(cell.role ? { text: cell.glyph, role: cell.role } : { text: cell.glyph })
+    return runs
+  }, [])
+
+const nearest = (row: readonly Cell[], from: number, target: number, set: string): number => {
+  let best = -1
+  row.forEach((cell, column) => {
+    if (column > from && isOf(set, cell.glyph) && (best < 0 || Math.abs(column - target) < Math.abs(best - target))) best = column
+  })
+  return best
+}
+
+const frameAt = (grid: readonly Cell[][], top: number, left: number): Frame | undefined => {
+  const row = grid[top]!
+  const corner = row.findIndex((cell, column) => column > left && (isOf(TOP_RIGHT, cell.glyph) || isOf(TOP_LEFT, cell.glyph)))
+  if (corner < 0 || !isOf(TOP_RIGHT, row[corner]?.glyph)) return undefined
+  const edges = [corner]
+  for (let line = top + 1; line < grid.length; line++) {
+    const cells = grid[line]!
+    const start = cells[left]?.glyph
+    if (isOf(BOTTOM_LEFT, start)) {
+      const end = nearest(cells, left, corner, BOTTOM_RIGHT)
+      return end < 0 ? undefined : { top, left, corner, edges: [...edges, end] }
+    }
+    if (!isOf(SIDE, start)) return undefined
+    const edge = nearest(cells, left, corner, SIDE)
+    if (edge < 0) return undefined
+    edges.push(edge)
+  }
+  return undefined
+}
+
+const framesOf = (grid: readonly Cell[][]): Frame[] =>
+  grid
+    .flatMap((row, top) => row.flatMap((cell, left) => (isOf(TOP_LEFT, cell.glyph) ? [frameAt(grid, top, left)] : [])))
+    .filter((frame): frame is Frame => frame !== undefined)
+    .sort((a, b) => a.corner - a.left - (b.corner - b.left))
+
+const fillOf = (row: readonly Cell[], edge: number, border: boolean): string => {
+  const before = row[edge - 1]?.glyph
+  return before && isOf(RULE, before) ? before : border ? '─' : ' '
+}
+
+const spareBefore = (row: readonly Cell[], edge: number, fill: string): number => {
+  let run = 0
+  while (row[edge - 1 - run]?.glyph === fill) run++
+  return Math.max(0, run - 1)
+}
+
+const blanks = (count: number, glyph: string, role?: FigureRole): Cell[] => Array.from({ length: count }, () => (glyph === ' ' || !role ? { glyph } : { glyph, role }))
+
+const spacesAfter = (row: readonly Cell[], edge: number, most: number): number => {
+  let run = 0
+  while (run < most && row[edge + 1 + run]?.glyph === ' ') run++
+  return run
+}
+
+const firstAfter = (row: readonly Cell[], column: number): number => row.findIndex((cell, at) => at > column && cell.glyph !== ' ' && cell.glyph !== '')
+
+const place = (row: Cell[], edge: number, target: number, shift: number, fill: string): boolean => {
+  if (target < edge) row.splice(target, edge - target)
+  if (target > edge) row.splice(edge, 0, ...blanks(target - edge, fill, row[edge]?.role))
+  if (shift > 0) row.splice(target + 1, 0, ...blanks(shift, ' '))
+  if (shift < 0) row.splice(target + 1, spacesAfter(row, target, -shift))
+  return target !== edge || shift !== 0
+}
+
+const pushRight = (grid: Cell[][], frame: Frame, frames: readonly Frame[], by: number): void => {
+  const bottom = frame.top + frame.edges.length - 1
+  const pushed = new Set(Array.from({ length: frame.edges.length }, (_, i) => frame.top + i))
+  for (const other of [...frames].sort((a, b) => a.left - b.left)) {
+    const rows = Array.from({ length: other.edges.length }, (_, i) => other.top + i)
+    if (other.left <= frame.corner || !rows.some(row => pushed.has(row))) continue
+    if (other.top <= bottom && other.top + other.edges.length - 1 >= frame.top && rows.every(row => row >= frame.top && row <= bottom)) continue
+    for (const row of rows) {
+      if (pushed.has(row)) continue
+      grid[row]!.splice(other.left, 0, ...blanks(by, ' '))
+      pushed.add(row)
+    }
+  }
+}
+
+const fit = (grid: Cell[][], frame: Frame, frames: readonly Frame[]): boolean => {
+  const last = frame.edges.length - 1
+  const rows = frame.edges.map((_, i) => grid[frame.top + i]!)
+  const fills = frame.edges.map((edge, i) => fillOf(rows[i]!, edge, i === 0 || i === last))
+  const reaches = frame.edges.map((edge, i) => (i === 0 ? edge : edge - spareBefore(rows[i]!, edge, fills[i]!)))
+  const target = Math.max(frame.corner, ...reaches)
+  const after = firstAfter(rows[0]!, frame.corner)
+  const shifts = frame.edges.map((edge, i) => (after >= 0 && firstAfter(rows[i]!, edge) === after ? edge - frame.corner : 0))
+  const moved = frame.edges.map((edge, i) => place(rows[i]!, edge, target, shifts[i]!, fills[i]!)).some(Boolean)
+  if (target > frame.corner) pushRight(grid, frame, frames, target - frame.corner)
+  return moved
+}
+
+export const reframe = (rows: readonly (readonly FigureRun[])[]): FigureRun[][] => {
+  const grid = rows.map(cellsOf)
+  for (let pass = 0; pass < MAX_REFRAMES; pass++) {
+    const frames = framesOf(grid)
+    if (!frames.some(frame => fit(grid, frame, frames))) break
+  }
+  return grid.map(runsOf)
+}
+
+type FigureDecision = { rows: readonly (readonly FigureRun[])[]; texts: readonly string[]; widest: number } | { note: string }
 
 const decisions = new Map<string, FigureDecision>()
 
 const drawable = (lines: readonly string[]): FigureDecision => {
-  const texts = lines.map(figureText)
-  return { lines, texts, widest: Math.max(0, ...texts.map(width)) }
+  const rows = reframe(lines.map(figureRuns))
+  const texts = rows.map(runs => runs.map(run => run.text).join(''))
+  return { rows, texts, widest: Math.max(0, ...texts.map(width)) }
 }
 
 const decide = (raw: readonly string[]): FigureDecision => {
@@ -235,7 +374,7 @@ export const drawFigure = (el: ElementTable, style: Style, block: { lines: reado
   if (block.isOpen) return null
   const decision = remember(decisions, block.lines.join('\n'), () => decide(block.lines))
   if ('note' in decision) return decision
-  if (decision.lines.length === 0) return null
+  if (decision.rows.length === 0) return null
   if (decision.widest > columns - 2) return { note: `figure is ${decision.widest} cols, terminal is ${columns}` }
-  return { element: figureElement(el, style, decision.lines, key), art: decision.texts.join('\n') }
+  return { element: figureElement(el, style, decision.rows, key), art: decision.texts.join('\n') }
 }

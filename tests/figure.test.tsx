@@ -1,7 +1,8 @@
 import type { On } from 'claude-code'
 import { expect, test } from 'claude-code/testing'
 
-import { FIGURE_GLYPHS, FIGURE_HINT, FIGURE_MAX_COLUMNS, FIGURE_MAX_LINES, FIGURE_ROLES, FIGURE_SAFE_COLUMNS, checkFigure, figureRoleColors, figureRuns, figureText, isFigureLang } from '../hooks/figure'
+import { FIGURE_GLYPHS, FIGURE_HINT, FIGURE_MAX_COLUMNS, FIGURE_MAX_LINES, FIGURE_SAFE_COLUMNS, checkFigure, figureRoleColors, figureRuns, figureText, isFigureLang, reframe } from '../hooks/figure'
+import { FIGURE_ROLES } from '../hooks/markdown'
 import { PRESETS } from '../hooks/presets'
 import { width } from '../hooks/render'
 
@@ -125,8 +126,76 @@ test('glyphs that may draw as emoji are found once per line', () => {
   expect(checkFigure(['✓ ✗ ▶ ◀ ▲ ▼ ● ○ ■ □ → ← · ⧉'])).toEqual([])
 })
 
-test('glyphs two columns wide are found once per line', () => {
-  expect(checkFigure(['名前 ok'])).toEqual([{ line: 1, message: '"名", "前" take two columns, use one-column glyphs' }])
+const KOREAN = lines(`{accent:┌─ 빌드 ─────────┐}
+{accent:│} {ok:자연어로 정의}  {accent:│}
+{accent:│} build {warn:실패}     {accent:│}
+{accent:└────────────────┘}`)
+
+test('Korean, Japanese and Chinese letters and fullwidth forms pass the checker', () => {
+  expect(checkFigure(KOREAN)).toEqual([])
+  expect(checkFigure(['名前 ok', 'カタカナ ひらがな', '中文 标签', 'ＡＢＣ　１２３'])).toEqual([])
+})
+
+test('flags, skin tones and keycaps still count as emoji', () => {
+  expect(checkFigure(['ok 🇮🇪'])).toEqual([{ line: 1, message: '"🇮🇪" may draw as an emoji, use a text glyph' }])
+  expect(checkFigure(['자연어 🚀'])).toEqual([{ line: 1, message: '"🚀" may draw as an emoji, use a text glyph' }])
+  expect(checkFigure(['step 1⃣']).map(finding => finding.message)).toEqual(['"1⃣" may draw as an emoji, use a text glyph'])
+})
+
+test('a Korean box closes in the same column on every line, wide letters counted twice', () => {
+  expect(new Set(KOREAN.map(line => width(figureText(line)))).size).toBe(1)
+})
+
+const drawn = (picture: readonly string[]) => reframe(picture.map(figureRuns)).map(runs => runs.map(run => run.text).join(''))
+
+test('clean pictures are not reframed', () => {
+  for (const picture of [CARDS, STORE, TIMELINE, ROUNDED, FORK, LEGS, BRANCH, NESTED, CYCLE, CHILDREN, SIDEWAYS, ACCENTED, KOREAN]) expect(drawn(picture)).toEqual(picture.map(figureText))
+})
+
+test('a box row whose side falls short is padded to the corner', () => {
+  expect(drawn(['┌──────┐', '│ {accent:ab} │', '└──────┘'])).toEqual(['┌──────┐', '│ ab   │', '└──────┘'])
+})
+
+test('a box row whose side overshoots gives back its spare spaces', () => {
+  expect(drawn(['┌──────┐', '│ ab     │', '└──────┘'])).toEqual(['┌──────┐', '│ ab   │', '└──────┘'])
+})
+
+test('a box next to a reframed box keeps its columns', () => {
+  expect(drawn(['┌─ A ─┐  ┌─ B ─┐', '│ aa   │ │ bb  │', '└─────┘  └─────┘'])).toEqual(['┌─ A ─┐  ┌─ B ─┐', '│ aa  │  │ bb  │', '└─────┘  └─────┘'])
+})
+
+test('a row wider than its box widens the box and moves the box beside it in one piece', () => {
+  expect(drawn(['┌─ A ──┐  ┌─ B ─┐', '│ abcdef│ │ bb  │', '└──────┘  └─────┘'])).toEqual(['┌─ A ───┐  ┌─ B ─┐', '│ abcdef│  │ bb  │', '└───────┘  └─────┘'])
+})
+
+test('a taller box beside a widened box moves in one piece, rows above and below included', () => {
+  expect(drawn(['          ┌─ B ─┐', '┌─ A ──┐  │ b1  │', '│ abcdef│ │ b2  │', '└──────┘  │ b3  │', '          └─────┘'])).toEqual(['           ┌─ B ─┐', '┌─ A ───┐  │ b1  │', '│ abcdef│  │ b2  │', '└───────┘  │ b3  │', '           └─────┘'])
+})
+
+test('boxes whose top border is the short row line up with their rows', () => {
+  for (const line of drawn(MODULES)) expect(width(line)).toBe(65)
+})
+
+test('a lone box widens to its widest row', () => {
+  expect(drawn(['┌─ A ──┐', '│ abcdef│', '└──────┘'])).toEqual(['┌─ A ───┐', '│ abcdef│', '└───────┘'])
+})
+
+test('a row with an arrow and no right side is drawn as written', () => {
+  expect(drawn(['┌──────┐', '│ ▲ up', '└──────┘'])).toEqual(['┌──────┐', '│ ▲ up', '└──────┘'])
+})
+
+test('a slipped Korean box is padded in columns, wide letters counted twice', () => {
+  const box = drawn(['┌─ 빌드 ───┐', '│ 실패 │', '└───────┘'])
+  expect(new Set(box.map(width)).size).toBe(1)
+  expect(box[1]).toBe('│ 실패     │')
+})
+
+test('a slipped inner box is reframed first, then the box around it', () => {
+  expect(drawn(['┌───────────┐', '│ ┌────┐    │', '│ │ a │     │', '│ └────┘    │', '└───────────┘'])).toEqual(['┌───────────┐', '│ ┌────┐    │', '│ │ a  │    │', '│ └────┘    │', '└───────────┘'])
+})
+
+test('reframed border fill keeps the color of its corner', () => {
+  expect(reframe([[{ text: '┌─────┐', role: 'accent' }], [{ text: '│ abc │' }], [{ text: '└──┘', role: 'accent' }]])[2]).toEqual([{ text: '└─────┘', role: 'accent' }])
 })
 
 test(`a line wider than ${FIGURE_MAX_COLUMNS} columns is found, wide glyphs counted twice and markup not at all`, () => {
@@ -158,12 +227,16 @@ test('braces that hold data are no finding', () => {
   expect(checkFigure(['config {id:42} {a:b} {retries:3} {node:api} {os:linux}', '{on:1} {dir:/tmp} {notes:x} {string:x} { ok: true }'])).toEqual([])
 })
 
-test('the figure hint names the opening line, every role, the width and one-column glyphs', () => {
+test('the figure hint names the opening line, every role, the width, one-column glyphs and two-column letters', () => {
   expect(FIGURE_HINT).toContain('opening line is exactly ```figure')
   for (const role of FIGURE_ROLES) expect(FIGURE_HINT).toContain(`${role} for `)
   expect(FIGURE_HINT).toContain(`At most ${FIGURE_SAFE_COLUMNS} columns`)
   expect(FIGURE_HINT).toContain(`glyphs one column wide such as ${FIGURE_GLYPHS}`)
   expect(FIGURE_HINT).toContain('markup takes no columns')
+  expect(FIGURE_HINT).toContain('CJK letters take two columns')
+  expect(FIGURE_HINT).toContain('count them twice')
+  expect(FIGURE_HINT).toContain('pad box rows to the top border')
+  expect(FIGURE_HINT).toContain('Figures only: color with {role:text}')
 })
 
 test('the figure hint says when to draw one and when not', () => {
@@ -172,8 +245,8 @@ test('the figure hint says when to draw one and when not', () => {
   expect(FIGURE_HINT).toContain('build the reply around them')
 })
 
-test('the figure hint stays under 950 characters', () => {
-  expect(FIGURE_HINT.length).toBeLessThanOrEqual(950)
+test('the figure hint stays under 1000 characters', () => {
+  expect(FIGURE_HINT.length).toBeLessThanOrEqual(1000)
 })
 
 test('every glyph the figure hint offers passes the checker', () => {
@@ -284,10 +357,10 @@ test('a figure offers its source and its drawn text as copies', async ($, on) =>
   }
 })
 
-test('a figure with a wide glyph or a markup error stays a code block', async ($, on) => {
+test('a figure with an emoji or a markup error stays a code block', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop'] as const) {
-    for (const line of ['┌────┐ 名', '{OK:done}']) {
+    for (const line of ['┌────┐ 🚀', '{OK:done}']) {
       const ui = await $.ui.mount(reply(['```figure', line, '```'].join('\n'), surface))
       expect(await ui.find({ type: 'Text', text: /^── figure$/ })).toBeDefined()
       await ui.unmount()
@@ -295,7 +368,7 @@ test('a figure with a wide glyph or a markup error stays a code block', async ($
   }
 })
 
-test('a figure whose frame slips or does not close is drawn as written, without a note', async ($, on) => {
+test('a figure whose frame slips is reframed and one that does not close is drawn as written, without a note', async ($, on) => {
   engine(on)
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount(reply(['```figure', '┌────────┐', '│ v1.4.2 │', '│ old    │', '```'].join('\n'), surface))
@@ -305,7 +378,7 @@ test('a figure whose frame slips or does not close is drawn as written, without 
     await ui.unmount()
     const modules = await $.ui.mount(reply(['```figure', ...MODULES, '```'].join('\n'), surface))
     expect(await modules.find({ type: 'Text', text: /^── figure$/ })).toBeUndefined()
-    expect(await modules.find({ type: 'Text', text: /^│ ┌─ Team A ───────┐  ┌─ Team B ───────┐  ┌─ Team C ───────┐ │$/ })).toBeDefined()
+    expect(await modules.find({ type: 'Text', text: /^│ ┌─ Team A ────────┐  ┌─ Team B ────────┐  ┌─ Team C ────────┐ │$/ })).toBeDefined()
     await modules.unmount()
   }
 })
@@ -402,15 +475,14 @@ test('marks that draw no column are found, they would hide in the picture', () =
 })
 
 test('a finding lists at most eight glyphs', () => {
-  const wide = '一二三四五六七八九十'
-  expect(checkFigure([wide]).map(finding => finding.message)).toContain('"一", "二", "三", "四", "五", "六", "七", "八" and 2 more take two columns, use one-column glyphs')
+  expect(checkFigure(['🚀🔥🎉🍕🎈🐛🌍📦🧪🔧']).map(finding => finding.message)).toContain('"🚀", "🔥", "🎉", "🍕", "🎈", "🐛", "🌍", "📦" and 2 more may draw as an emoji, use a text glyph')
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`a figure that stays code says why in a dim line on ${surface}`, async ($, on) => {
     engine(on)
-    const finding = await $.ui.mount(reply(['```figure', '┌────────┐', '│ v1.4.2 │', '│ 名     │', '```'].join('\n'), surface))
-    expect(await finding.find({ type: 'Text', text: /^figure line 3: "名" take two columns, use one-column glyphs$/ })).toBeDefined()
+    const finding = await $.ui.mount(reply(['```figure', '┌────────┐', '│ v1.4.2 │', '│ 🚀     │', '```'].join('\n'), surface))
+    expect(await finding.find({ type: 'Text', text: /^figure line 3: "🚀" may draw as an emoji, use a text glyph$/ })).toBeDefined()
     await finding.unmount()
     const wide = await $.ui.mount(reply(['```figure', `{accent:${'─'.repeat(70)}}`, '```'].join('\n'), surface, 60))
     expect(await wide.find({ type: 'Text', text: /^figure is 70 cols, terminal is \d+$/ })).toBeDefined()
@@ -448,11 +520,23 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 
-  test(`a figure whose box side is three columns off is drawn as written on ${surface}`, async ($, on) => {
+  test(`a Korean figure draws as written, frame aligned and colored, on ${surface}`, async ($, on) => {
+    engine(on)
+    const ui = await $.ui.mount(reply(['```figure', ...KOREAN, '```'].join('\n'), surface))
+    expect(await ui.find({ type: 'Text', text: /^── figure$/ })).toBeUndefined()
+    const word = await ui.find({ type: 'Text', text: /^자연어로 정의$/ })
+    expect(word?.props.color).toBeDefined()
+    expect(word?.props.color).not.toBe((await ui.find({ type: 'Text', text: /^ build $/ }))?.props.color)
+    const drawn = await Promise.all(['│ 자연어로 정의  │', '│ build 실패     │', '┌─ 빌드 ─────────┐'].map(async text => (await ui.find({ type: 'Text', text: new RegExp(`^${text}$`) }))?.text))
+    expect(drawn.map(text => width(text ?? ''))).toEqual([18, 18, 18])
+    await ui.unmount()
+  })
+
+  test(`a figure whose box side is three columns off is pulled back to its corner on ${surface}`, async ($, on) => {
     engine(on)
     const ui = await $.ui.mount(reply(['```figure', '┌────────┐', '│ v1.4.2    │', '└────────┘', '```'].join('\n'), surface))
     expect(await ui.find({ type: 'Text', text: /^── figure$/ })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /^│ v1\.4\.2    │$/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /^│ v1\.4\.2 │$/ })).toBeDefined()
     await ui.unmount()
   })
 }

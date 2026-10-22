@@ -104,6 +104,19 @@ test('display math draws as an image that keeps the formula aspect', async ($, o
   await ui.unmount()
 })
 
+test('display math still draws as an image when file links are on', async ($, on) => {
+  mock.env(on, { ...KITTY, HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu' })
+  on('session.version', () => ({ value: { version: '2.1.289', base: '2.1.289' } }))
+  const clock = mock.clock(on)
+  ratex(on)
+
+  const ui = await $.ui.mount(reply(REPLY))
+  await clock.settle()
+
+  expect((await ui.find({ type: 'Image' }))?.props.alt).toBe('\\int_0^1 x^2\\,dx')
+  await ui.unmount()
+})
+
 test('a math fence draws as an image too', async ($, on) => {
   mock.env(on, KITTY)
   const clock = mock.clock(on)
