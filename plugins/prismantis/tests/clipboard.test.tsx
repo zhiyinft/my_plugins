@@ -168,6 +168,26 @@ test('the HTML check runs once, on session start or on the first prompt after a 
   await after.unmount()
 })
 
+test('a table drawn before the HTML check lands gains ⧉ html when it lands', async ($, on) => {
+  let release = () => {}
+  const held = new Promise<void>(resolve => { release = resolve })
+  mock.env(on, {})
+  on('fs.stat', async (_, e, next) => {
+    if (!e.path.replace(/\\/g, '/').endsWith('/usr/bin/osascript')) return next(e)
+    await held
+    return { value: { kind: 'file' as const, size: 0, mtimeMs: 0, isLink: false } }
+  })
+  on('session.start', () => ({ cwd: '/tmp' }))
+  const ui = await $.ui.mount(mount)
+  const labels = async () => (await ui.findAll({ type: 'Button' })).map(button => button.props.label).filter(label => label !== '⧉ copy reply')
+  const started = $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  expect(await labels()).toEqual(['⧉ md', '⧉ art'])
+  release()
+  await started
+  expect(await labels()).toEqual(['⧉ md', '⧉ art', '⧉ html'])
+  await ui.unmount()
+})
+
 for (const key of ['copy0', 'html0']) for (const failure of ['unavailable', 'refused'] as const) test(`${key} reports a ${failure} surface clipboard`, async ($, on) => {
   clipboardEnv(on, 'macos')
   on('process.run', () => runResult(1))

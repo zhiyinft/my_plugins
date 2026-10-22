@@ -13,7 +13,7 @@ export const PRESETS = {
     inlineCode: '#04a5e5', codeText: '#4c4f69', codeCommand: '#1e66f5', codeFlag: '#d20f39', codeString: '#40a02b',
     codeComment: '#9ca0b0', link: '#1e66f5', path: '#209fb5', number: '#40a02b', quote: '#6c6f85',
     rule: '#bcc0cc', tableRule: '#acb0be', bullet: '#8839ef', diagram: '#1e66f5', diagramText: '#4c4f69',
-    diffAdded: '#40a02b', diffRemoved: '#d20f39',
+    diffAdded: '#3f9e2b', diffRemoved: '#d20f39',
   },
   dracula: {
     accent: '#bd93f9', heading: '#bd93f9', tableHeader: '#f1fa8c', strong: '#f8f8f2', emphasis: '#ff79c6',
@@ -104,10 +104,28 @@ export const PRESETS = {
     inlineCode: '#2aa198', codeText: '#586e75', codeCommand: '#268bd2', codeFlag: '#cb4b16', codeString: '#859900',
     codeComment: '#93a1a1', link: '#268bd2', path: '#2aa198', number: '#859900', quote: '#839496',
     rule: '#eee8d5', tableRule: '#93a1a1', bullet: '#6c71c4', diagram: '#268bd2', diagramText: '#586e75',
-    diffAdded: '#859900', diffRemoved: '#dc322f',
+    diffAdded: '#849800', diffRemoved: '#dc322f',
   },
   mono: {} as Theme,
 } satisfies Record<string, Theme>
 
 export type PresetName = keyof typeof PRESETS
 export const PRESET_NAMES = Object.keys(PRESETS) as PresetName[]
+
+export const PRESET_BACKGROUNDS: Partial<Record<PresetName, string>> = {
+  'catppuccin-mocha': '#1e1e2e',
+  'catppuccin-latte': '#eff1f5',
+  dracula: '#282a36',
+  nord: '#2e3440',
+  'tokyo-night': '#1a1b26',
+  'gruvbox-dark': '#282828',
+  'gruvbox-light': '#fbf1c7',
+  'rose-pine': '#191724',
+  'rose-pine-dawn': '#faf4ed',
+  everforest: '#2d353b',
+  'github-dark': '#0d1117',
+  'github-light': '#ffffff',
+  'one-dark': '#282c34',
+  'solarized-dark': '#002b36',
+  'solarized-light': '#fdf6e3',
+}

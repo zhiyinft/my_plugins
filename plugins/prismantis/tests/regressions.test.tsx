@@ -1,12 +1,15 @@
 import type { On } from 'claude-code'
-import { expect, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
+import { expect, mock, test } from 'claude-code/testing'
 
-import { helpText, showcaseText } from '../hooks/help'
+import { helpText, setupParts, setupText, showcaseText } from '../hooks/help'
 import { inlineText, parse } from '../hooks/markdown'
 import { tableHtml, tableText } from '../hooks/html'
 import { inlineMarks, mermaidText, shortenEdgeLabels } from '../hooks/mermaid'
-import { isReadOnlyCall, tableArt, takesClickableMarks, takesEditorLinks, takesHttpLinks, width } from '../hooks/render'
-import { PRESETS } from '../hooks/presets'
+import type { TerminalEnv } from '../hooks/render'
+import { drawsHyperlinks, isReadOnlyCall, renderBashEdits, renderBlocks, tableArt, takesClickableMarks, takesEditorLinks, takesHttpLinks, width } from '../hooks/render'
+import { PRESET_NAMES, PRESETS } from '../hooks/presets'
+import { resolveStyle } from '../hooks/theme'
 import { claudeAt, linksHttp } from './claude-version'
 import { clipboardEnv, recordCopies, recordToasts } from './clipboard-env'
 
@@ -329,14 +332,33 @@ test('a half-streamed reply with an open fence and a cut table still draws', asy
   }
 })
 
+test('a line holding only a tag draws dim on its own, never as a path or joined to the paragraph next to it', () => {
+  const blocks = parse('Answer text.\n\n<tldr>\n- First point, see /tmp/example.\n\nA closing sentence.\n</tldr>', hl)
+  expect(blocks.map(b => b.kind)).toEqual(['paragraph', 'paragraph', 'list', 'paragraph', 'paragraph'])
+  expect(blocks[1]).toMatchObject({ inline: [{ kind: 'dim', text: '<tldr>' }], raw: '<tldr>' })
+  expect(blocks[3]?.raw).toBe('A closing sentence.')
+  expect(blocks[4]).toMatchObject({ inline: [{ kind: 'dim', text: '</tldr>' }], raw: '</tldr>' })
+  expect(parse('a <b>bold</b> word\n<br/>', hl).map(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'dim'))).toEqual([false])
+})
+
+test('figure role markup outside a figure draws as its text in table cells and prose, and code keeps it', () => {
+  const [table] = parse('| Tool | Fits a sidecar? |\n|---|---|\n| A | {ok:✓} single binary |\n| B | {warn:✗} needs tinyproxy |', hl)
+  expect(table?.kind === 'table' && table.rows.map(row => inlineText(row[1]!))).toEqual(['✓ single binary', '✗ needs tinyproxy'])
+  const [prose] = parse('Also {ok:healthy} and **{strong:bold}**, but `{ok:1}`, {err:x} and {id:42} stay.', hl)
+  expect(prose?.kind === 'paragraph' && inlineText(prose.inline)).toBe('Also healthy and bold, but {ok:1}, {err:x} and {id:42} stay.')
+})
+
 test('the help screen shows every element prismantis draws', async () => {
   const blocks = parse(showcaseText(Object.keys(PRESETS)), hl)
   expect(showcaseText(Object.keys(PRESETS))).toContain('promptStyle')
+  expect(showcaseText(Object.keys(PRESETS))).toContain('`wide`')
+  expect(showcaseText(Object.keys(PRESETS))).toContain('A paste of 4 lines or more')
   expect(showcaseText(Object.keys(PRESETS))).toContain('`clock`')
   expect(showcaseText([])).toContain('⧉ html')
   expect(showcaseText([])).toContain('<i>Reply</i>')
   expect(showcaseText([])).toContain('CopyQ')
   expect(showcaseText([])).toContain('plain text')
+  expect(showcaseText([])).toContain('line "east" [')
   expect(blocks.some(b => b.kind === 'table' && b.align.includes('right') && b.align.includes('center'))).toBe(true)
   const kinds = new Set(blocks.map(b => b.kind))
   for (const kind of ['heading', 'paragraph', 'list', 'code', 'quote', 'alert', 'rule', 'table']) expect(kinds.has(kind as never)).toBe(true)
@@ -348,20 +370,40 @@ test('the help screen shows every element prismantis draws', async () => {
   const links = blocks.flatMap(b => (b.kind === 'paragraph' ? b.inline.filter(n => n.kind === 'link') : []))
   expect(links.some(l => l.kind === 'link' && l.text !== l.href) && links.some(l => l.kind === 'link' && l.text === l.href)).toBe(true)
   expect(links.some(l => l.kind === 'link' && l.href.endsWith('Foo_(bar)')) && links.some(l => l.kind === 'link' && l.text === 'render.tsx')).toBe(true)
+  expect(links.some(l => l.kind === 'link' && l.href === `file://${l.text}`) && links.some(l => l.kind === 'link' && l.href.startsWith('file:///') && l.href !== `file://${l.text}`)).toBe(true)
+  expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text.startsWith('./')) && b.inline.some(n => n.kind === 'path' && n.text.startsWith('~/')))).toBe(true)
+  expect(showcaseText([])).toContain('open on click in a terminal that draws hyperlinks')
+  expect(showcaseText([])).toContain('/tmp/app.ts open on click')
+  expect(showcaseText([])).toContain('slash commands like /config stay text')
+  expect(showcaseText([])).toContain('the file each one read or edited opens on click')
   expect(showcaseText([])).toContain('f(*args, **kwargs)')
+  expect(showcaseText([])).toContain('Programs and launchers stay plain text')
+  expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text.endsWith('.sh')) && b.inline.some(n => n.kind === 'path' && n.text.endsWith('.app')))).toBe(true)
   expect(blocks.some(b => b.kind === 'list' && b.items.some(i => i.task === true) && b.items.some(i => i.task === false) && b.items.some(i => i.depth > 0 && i.task !== undefined))).toBe(true)
   expect(kinds.has('notes')).toBe(true)
+  expect(blocks.some(b => b.kind === 'paragraph' && b.inline.length === 1 && b.inline[0]?.kind === 'dim' && b.raw === '</summary>')).toBe(true)
   expect(blocks.some(b => b.kind === 'table' && b.header.some(h => h.some(n => n.kind === 'footnote')))).toBe(true)
   expect(showcaseText([])).toContain('Click a mark to see its note')
   expect(showcaseText([]).includes("toolStyle")).toBe(true)
   expect(showcaseText([]).includes("toolOutput")).toBe(true)
   expect(showcaseText([])).toContain('copyButtonStyle')
+  expect(showcaseText([])).toContain('each block shows a dim ⧉ instead: point at it for its buttons')
   expect(showcaseText([])).toContain('+M more lines')
   expect(showcaseText([])).toContain('```figure')
+  expect(showcaseText([])).toContain('lined up with its corner')
+  expect(showcaseText([])).toContain('pie showData')
+  expect(showcaseText([])).toContain('Release  :milestone')
   expect(blocks.some(b => b.kind === 'code' && b.lines.length > 30)).toBe(true)
   expect(showcaseText([])).toContain('diff card headed `+N −M`')
+  expect(showcaseText([])).toContain('code highlighted in the file\'s language')
+  expect(showcaseText([])).toContain('the changed words in a deeper tint')
   expect(showcaseText([])).toContain('Files a shell command changes')
   expect(showcaseText([])).toContain('Set `diffStyle` in `/config` for the look: `card`, `full`, `marks` or `bar`')
+  expect(showcaseText([])).toContain('Set `pieStyle` to `bars` in `/config` for one bar per slice')
+  expect(showcaseText([])).toContain("A file Write creates shows its first 10 lines as numbered code in the theme's colors with no diff marks")
+  expect(showcaseText([])).toContain('A file an Edit or a shell command creates shows its first 10 lines as added lines under `Created`')
+  expect(showcaseText([])).toContain('one `Deleted` line that opens to its removed lines on a click')
+  expect(showcaseText([])).toContain('one `Renamed old → new` line')
   expect(showcaseText([])).not.toContain('diffAddedColor')
 })
 
@@ -408,7 +450,7 @@ test('a mounted diagram with wide labels draws its box borders on the same colum
 
 test('every diagram on the help screen draws as art', async () => {
   const diagrams = parse(showcaseText(Object.keys(PRESETS)), hl).flatMap(b => (b.kind === 'code' && b.lang === 'mermaid' ? [b.lines.join('\n')] : []))
-  expect(diagrams.length).toBe(4)
+  expect(diagrams.length).toBe(7)
   for (const source of diagrams) expect(mermaidText(source, false, 100)).not.toBeNull()
 })
 
@@ -420,6 +462,8 @@ test('the help screen fits one screen: few blocks, two alerts, a table, a list a
   expect(blocks.some(b => b.kind === 'list' && b.items.some(i => i.task !== undefined))).toBe(true)
   expect(blocks.some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'link'))).toBe(true)
   expect(helpText(Object.keys(PRESETS))).toContain('/prismantis copy')
+  expect(helpText([])).toContain('`/prismantis setup`')
+  expect(showcaseText([])).toContain('`/prismantis setup`')
   expect(helpText([])).toContain('`random`')
   expect(showcaseText([])).toContain('/prismantis theme random')
   expect(helpText([])).toContain('HTML (macOS/Linux)')
@@ -469,6 +513,15 @@ test('a table art button copies boxed text ready for Slack', async ($, on) => {
   await ui.unmount()
 })
 
+test('bidi marks take no column, so a table cell that holds one is not drawn a column too wide', async () => {
+  expect(width('\u200f13/10')).toBe(5)
+  expect(width('\u200ekubectl\u200e')).toBe(7)
+  expect(width('\u2067שלום\u2069')).toBe(4)
+  const [table] = parse('| day | result |\n|---|---|\n| \u200f13/10 | ok |', hl)
+  if (table?.kind !== 'table') throw new Error('not a table')
+  expect(tableArt(table).split('\n')[1]!.split('┬')[0]).toBe(`┌${'─'.repeat(7)}`)
+})
+
 test('wide table art wraps long cells to stay 100 columns wide', async () => {
   const long = 'Wrong. With no default, databag_config raises No config key is found, so the render fails and nothing is applied, which is the fail-closed behaviour we want.'
   const [table] = parse(`| Codebot says | Verdict |\n|---|---|\n| A missing x_seen_by renders an empty value | ${long} |`, hl)
@@ -512,12 +565,13 @@ test('a one-paragraph English block gets no copy reply button', async $ => {
   await ui.unmount()
 })
 
-test('only http and https links become terminal hyperlinks', async ($, on) => {
+test('only http, https and file links become terminal hyperlinks', async ($, on) => {
   claudeAt(on, '2.1.289')
+  mock.env(on, {})
   if (!(await linksHttp($.ui.mount(mount('[x](http://example.com)'))))) return
-  const ui = await $.ui.mount(mount('[docs](https://example.com) [dev](http://localhost:3000) [plain](http://example.com) [mail](mailto:a@example.com) [run](javascript:alert(1)) [disk](file:///etc/passwd)'))
+  const ui = await $.ui.mount(mount('[docs](https://example.com) [dev](http://localhost:3000) [plain](http://example.com) [mail](mailto:a@example.com) [run](javascript:alert(1)) [/etc/passwd](file:///etc/passwd)'))
   const links = (await ui.findAll({ type: 'Link' })).map(l => l.props.href)
-  expect(links).toEqual(['https://example.com', 'http://localhost:3000', 'http://example.com'])
+  expect(links).toEqual(['https://example.com', 'http://localhost:3000', 'http://example.com', 'file:///etc/passwd'])
   expect(await ui.find({ type: 'Text', text: /^run \(javascript:alert\(1\)\)$/ })).toBeDefined()
   await ui.unmount()
 })
@@ -601,6 +655,444 @@ test('VS Code file hyperlinks start at Claude Code 2.1.294', () => {
   for (const base of ['2.1.293', '2.1.289', '2.1.287', '2.0.999', 'dev', '', undefined]) expect(takesEditorLinks(base)).toBe(false)
 })
 
+const PATHS = 'Open /srv/app/main.ts, ~/notes/todo.md or ./docs/guide.md.\n\n- Line 12 of ~/notes/list.md:12\n\n| file | rows |\n|---|---|\n| /srv/data/table.csv | 4 |'
+
+const PATH_TEXTS = ['/srv/app/main.ts', '~/notes/todo.md', './docs/guide.md.', '~/notes/list.md', '/srv/data/table.csv']
+
+const pathColored = async (ui: { findAll: (query: { type: 'Text'; text: RegExp }) => Promise<{ props: { color?: unknown } }[]> }) => {
+  for (const text of PATH_TEXTS) {
+    const found = await ui.findAll({ type: 'Text', text: exact(text) })
+    if (!found.some(n => n.props.color === PRESETS['catppuccin-mocha'].path)) return false
+  }
+  return true
+}
+
+const filesAt = (on: On, base: string | undefined, env: Record<string, string> = {}) => {
+  if (base) claudeAt(on, base)
+  mock.env(on, { FORCE_HYPERLINK: '1', HOME: '/home/me', ...env })
+  on('session.root', () => ({ value: '/work/app' }))
+}
+
+const withoutLinks = (node: unknown): unknown => {
+  if (node === null || typeof node !== 'object') return node
+  const { type, props, children } = node as { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+  if (type === 'Link') return props?.label
+  const { key: _key, ...rest } = props ?? {}
+  return { type, props: rest, children: children?.map(withoutLinks) }
+}
+
+for (const [where, env, root] of [
+  ['outside WSL', {}, 'file://'],
+  ['under WSL', { WSL_DISTRO_NAME: 'Ubuntu' }, 'file://wsl.localhost/Ubuntu'],
+] as const) {
+  test(`paths in a paragraph, a list and a table link to their files ${where}`, async ($, on) => {
+    filesAt(on, '2.1.289', env)
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount(mount(PATHS))
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(
+      ['/srv/app/main.ts', '/home/me/notes/todo.md', '/work/app/docs/guide.md', '/home/me/notes/list.md', '/srv/data/table.csv'].map(path => `${root}${path}`))
+    expect(await pathColored(ui)).toBe(true)
+    await ui.unmount()
+  })
+
+  test(`file:// markdown links become hyperlinks ${where}`, async ($, on) => {
+    filesAt(on, '2.1.289', env)
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount(mount('[/home/me/notes.md](file:///home/me/notes.md) [/srv/x.log](file://localhost/srv/x.log) [C:\\Users\\me\\x.txt](file:///C:/Users/me/x.txt) [\\\\server\\share\\x.txt](file://server/share/x.txt)'))
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual([`${root}/home/me/notes.md`, root === 'file://' ? 'file://localhost/srv/x.log' : `${root}/srv/x.log`, 'file:///C:/Users/me/x.txt', 'file://server/share/x.txt'])
+    expect((await ui.find({ type: 'Text', text: /^\/home\/me\/notes\.md$/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].link)
+    await ui.unmount()
+  })
+}
+
+const LABELS: [label: string, href: string, linked: boolean][] = [
+  ['/tmp/notes.md', 'file:///tmp/notes.md', true],
+  ['file:///tmp/notes.md', 'file:///tmp/notes.md', true],
+  ['FILE://localhost/tmp/notes.md', 'file:///tmp/notes.md', true],
+  ['/tmp/notes.md.', 'file:///tmp/notes.md', true],
+  ['~/notes/todo.md', 'file:///home/me/notes/todo.md', true],
+  ['./docs/guide.md', 'file:///work/app/docs/guide.md', true],
+  ['../shared/a.txt', 'file:///work/shared/a.txt', true],
+  ['/tmp/a b.md', 'file:///tmp/a%20b.md', true],
+  ['/home/me/', 'file:///home/me', true],
+  ['/tmp/a.html', 'file:///tmp/a.html#s', true],
+  ['C:\\Users\\me\\x.txt', 'file:///C:/Users/me/x.txt', true],
+  ['\\\\server\\share\\x.txt', 'file://server/share/x.txt', true],
+  ['notes', 'file:///tmp/notes.md', false],
+  ['notes.md', 'file:///tmp/notes.md', false],
+  ['the docs', 'file:///tmp/setup.command', false],
+  ['/tmp/notes.md', 'file:///tmp/setup.command', false],
+  ['/tmp/notes.md', 'file:///tmp/notes.md/../setup.command', false],
+  ['~/notes.md', 'file:///tmp/notes.md', false],
+  ['/srv/share/x.txt', 'file://srv/share/x.txt', false],
+  ['/tmp/a.html#s', 'file:///tmp/a.html#s', false],
+  ['/tmp/a%20b.md', 'file:///tmp/a%20b.md', false],
+]
+
+const SPECIAL = /[.*+?^${}()|[\]\\]/g
+
+for (const [where, env] of [['outside WSL', {}], ['under WSL', { WSL_DISTRO_NAME: 'Ubuntu' }]] as const) {
+  for (const surface of ['terminal', 'desktop'] as const) {
+    test(`a file:// link stays a link only when its label shows its own path, ${where} on ${surface}`, async ($, on) => {
+      filesAt(on, '2.1.289', env)
+      if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+      const ui = await $.ui.mount({ ...mount(LABELS.map(([label, href]) => `[${label}](${href})`).join(' and '), 400), surface })
+      const linked = LABELS.filter(([, , links]) => links && surface === 'terminal')
+      const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
+      expect(hrefs.length).toBe(linked.length)
+      if (where === 'outside WSL') expect(hrefs).toEqual(linked.map(([, href]) => href))
+      const missing: string[] = []
+      for (const [label, href] of LABELS.filter(row => !linked.includes(row))) {
+        const text = label === href ? href : `${label} (${href})`
+        if (!(await ui.find({ type: 'Text', text: new RegExp(`^${text.replace(SPECIAL, '\\$&')}$`) }))) missing.push(text)
+      }
+      expect(missing).toEqual([])
+      await ui.unmount()
+    })
+  }
+}
+
+test('a home folder with a space is percent-encoded in the file link', async ($, on) => {
+  filesAt(on, '2.1.289', { HOME: '/home/Mara Schwartz' })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await $.ui.mount(mount('Settings live in ~/.claude/settings.json and ../shared/a+b@2.txt'))
+  expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/Mara%20Schwartz/.claude/settings.json', 'file:///work/shared/a+b@2.txt'])
+  await ui.unmount()
+})
+
+const COMMANDS = 'Run /config or /compact first.\n\n- /config opens the settings\n- /compact frees context\n\n| command | does |\n|---|---|\n| /config | settings |\n| /compact | context |'
+
+const pathTexts = async (ui: { findAll: (query: { type: 'Text'; text: RegExp }) => Promise<{ props: { color?: unknown } }[]> }, text: RegExp) =>
+  (await ui.findAll({ type: 'Text', text })).filter(n => n.props.color === PRESETS['catppuccin-mocha'].path).length
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`slash commands like /config in a paragraph, a list and a table stay unlinked path-colored text on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    const ui = await $.ui.mount({ ...mount(COMMANDS), surface })
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    expect([await pathTexts(ui, /^\/config$/), await pathTexts(ui, /^\/compact$/)]).toEqual([3, 3])
+    await ui.unmount()
+  })
+
+  test(`absolute paths with two parts link, and ./ and ~/ paths link as before, on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount('Open /tmp/app.ts, /a/b, ./x or ~/x'), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///tmp/app.ts', 'file:///a/b', 'file:///work/app/x', 'file:///home/me/x'] : [])
+    await ui.unmount()
+  })
+
+  test(`an absolute path links only when a name follows its first slash-separated name, on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount('See /tmp/ and /config. Then /config:3, /a//b, /srv/log., /srv/app.ts:12, // and / alone, /tmp/., C:\\Users\\me\\x.ts and C:/Users/me/x.ts'), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///a/b', 'file:///srv/log', 'file:///srv/app.ts'] : [])
+    expect([await pathTexts(ui, /^\/tmp\/$/), await pathTexts(ui, /^\/config\.$/), await pathTexts(ui, /^\/config$/), await pathTexts(ui, /^\/tmp\/\.$/)]).toEqual([1, 1, 1, 1])
+    await ui.unmount()
+  })
+
+  test(`a tag line stays dim and a closing tag inside a sentence stays unlinked, on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount('<tldr>\n- First point, see /tmp/example.\n</tldr>\n\nClose it with </tldr> when done.'), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///tmp/example'] : [])
+    expect(await pathTexts(ui, /^\/tldr$/)).toBe(1)
+    await ui.unmount()
+  })
+}
+
+for (const [where, surface, base, env] of [
+  ['on Claude Code 2.1.288, which refuses file hyperlinks', 'terminal', '2.1.288', {}],
+  ['when the Claude Code version is unknown', 'terminal', undefined, {}],
+  ['on desktop', 'desktop', '2.1.289', {}],
+  ['in a terminal that draws no hyperlinks', 'terminal', '2.1.289', { FORCE_HYPERLINK: '0' }],
+  ['in a session over SSH', 'terminal', '2.1.289', { SSH_CONNECTION: '10.0.0.2 52814 10.0.0.9 22' }],
+] as const) {
+  test(`paths stay plain colored text ${where}`, async ($, on) => {
+    filesAt(on, base, env)
+    const ui = await $.ui.mount({ ...mount(PATHS), surface })
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    expect(await pathColored(ui)).toBe(true)
+    await ui.unmount()
+  })
+}
+
+test('a terminal that draws no hyperlinks still links file:// markdown links', async ($, on) => {
+  filesAt(on, '2.1.289', { FORCE_HYPERLINK: '0', TERM_PROGRAM: 'Apple_Terminal' })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await $.ui.mount(mount('[~/notes.md](file:///home/me/notes.md) and ~/notes/todo.md'))
+  expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/me/notes.md'])
+  await ui.unmount()
+})
+
+for (const env of [{ SSH_CONNECTION: '10.0.0.2 52814 10.0.0.9 22' }, { SSH_TTY: '/dev/pts/3' }] as Record<string, string>[]) {
+  test(`file:// links draw as plain text in a session over SSH (${Object.keys(env)[0]})`, async ($, on) => {
+    filesAt(on, '2.1.289', env)
+    const ui = await $.ui.mount(mount('[notes](file:///home/me/notes.md) and [docs](https://example.com)'))
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['https://example.com'])
+    expect(await ui.find({ type: 'Text', text: /^notes \(file:\/\/\/home\/me\/notes\.md\)$/ })).toBeDefined()
+    await ui.unmount()
+  })
+}
+
+test('file links on desktop draw as plain text, as before', async ($, on) => {
+  filesAt(on, '2.1.289')
+  const ui = await $.ui.mount({ ...mount('[notes](file:///home/me/notes.md)'), surface: 'desktop' })
+  expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+  expect(await ui.find({ type: 'Text', text: /^notes \(file:\/\/\/home\/me\/notes\.md\)$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+for (const columns of [120, 34]) {
+  test(`linked paths keep every width, wrap and table column at ${columns} columns`, async ($, on) => {
+    const source = `${PATHS}\n\nקובץ ההגדרות ~/notes/todo.md נמצא כאן\n\n| a long path column | n |\n|---|---|\n| /srv/very/long/folder/name/that/wraps/file.txt | 1 |`
+    const plain = { ...resolveStyle({ rtl: 'warp' }), httpLinks: true, home: '/home/me', cwd: '/work/app' }
+    const blocks = parse(source, hl)
+    let drawnPlain: unknown
+    let drawnLinked: unknown
+    on('ui.render', ($, e) => {
+      const el = $.ui.resolve(e)
+      drawnPlain = renderBlocks(el, plain, blocks, columns)
+      drawnLinked = renderBlocks(el, { ...plain, fileLinks: 'file://', pathLinks: true }, blocks, columns)
+      return <el.Text>engine</el.Text>
+    })
+    const ui = await $.ui.mount(mount(''))
+    await ui.unmount()
+    const count = (node: unknown): number => (node === null || typeof node !== 'object' ? 0 : ((node as { type?: string }).type === 'Link' ? 1 : 0) + ((node as { children?: unknown[] }).children ?? []).reduce<number>((n, c) => n + count(c), 0))
+    expect(count({ children: drawnPlain })).toBe(0)
+    expect(count({ children: drawnLinked }) > PATH_TEXTS.length).toBe(true)
+    expect(JSON.stringify(withoutLinks({ children: drawnLinked }))).toBe(JSON.stringify(withoutLinks({ children: drawnPlain })))
+  })
+}
+
+test('copy reply copies paths as written', async ($, on) => {
+  filesAt(on, '2.1.289')
+  const copied = recordCopies(on)
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await $.ui.mount(mount(PATHS))
+  const reply = (await ui.findAll({ type: 'Button' })).find(b => b.props.label === '⧉ copy reply')
+  await ui.press({ key: reply!.key! })
+  expect(copied).toEqual([PATHS])
+  await ui.unmount()
+})
+
+test('a path or link longer than Claude Code draws stays text, and the reply still draws', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const long = `/${'a'.repeat(60)}`.repeat(35)
+  const web = `https://example.com/${'b'.repeat(2050)}`
+  const wide = `https://example.com/${'文'.repeat(700)}`
+  const ui = await $.ui.mount(mount(`see ${long} here\n\n${web}\n\n[wide](${wide}) and ~/short.md`))
+  expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/me/short.md'])
+  expect(await ui.find({ type: 'Text', text: /^wide \(https:\/\/example\.com\/文+\)$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a line holding only a tag is never drawn as a path, so it never links', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await $.ui.mount(mount('<tldr>\n- First point, see /tmp/example.\n</tldr>'))
+  expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///tmp/example'])
+  expect(await ui.find({ type: 'Text', text: /^<\/tldr>$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('paths link in the terminals Claude Code draws hyperlinks in, and only those', () => {
+  const cases: [TerminalEnv, boolean][] = [
+    [{}, false],
+    [{ FORCE_HYPERLINK: '1' }, true],
+    [{ FORCE_HYPERLINK: '0', WT_SESSION: 'x' }, false],
+    [{ WT_SESSION: '' }, true],
+    [{ TERM_PROGRAM: 'tmux', TERM_PROGRAM_VERSION: '3.3a' }, false],
+    [{ TERM_PROGRAM: 'tmux', TERM_PROGRAM_VERSION: '3.4' }, true],
+    [{ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.71.2' }, false],
+    [{ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.72.0' }, true],
+    [{ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '1.5.0' }, false],
+    [{ TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: '0.4.1' }, false],
+    [{ TERM_PROGRAM: 'vscode' }, false],
+    [{ TERM_PROGRAM: 'WezTerm', TERM_PROGRAM_VERSION: '20240203-110809-5046fc22' }, true],
+    [{ TERM_PROGRAM: 'WezTerm', TERM_PROGRAM_VERSION: '20200101-000000-0' }, false],
+    [{ TERM_PROGRAM: 'iTerm.app', TERM_PROGRAM_VERSION: '3.0.0' }, true],
+    [{ TERM_PROGRAM: 'ghostty' }, true],
+    [{ TERM_PROGRAM: 'Apple_Terminal' }, false],
+    [{ VTE_VERSION: '7600' }, true],
+    [{ VTE_VERSION: '4600' }, false],
+    [{ VTE_VERSION: '0.50.0' }, false],
+    [{ LC_TERMINAL: 'iTerm2' }, true],
+    [{ LC_TERMINAL: 'Konsole' }, false],
+    [{ TERMINAL_EMULATOR: 'JetBrains-JediTerm' }, true],
+    [{ TERM: 'xterm-kitty' }, true],
+    [{ TERM: 'alacritty' }, true],
+    [{ TERM: 'xterm-256color' }, false],
+  ]
+  for (const [env, linked] of cases) expect([env, drawsHyperlinks(env)]).toEqual([env, linked])
+})
+
+for (const [version, linked] of [['1.5.0', false], ['1.95.3', true]] as const) {
+  test(`a VS Code terminal at ${version} ${linked ? 'links' : 'does not link'} paths, as Claude Code decides`, async ($, on) => {
+    filesAt(on, '2.1.289', { FORCE_HYPERLINK: '', TERM_PROGRAM: 'vscode', TERM_PROGRAM_VERSION: version })
+    if (linked && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount(mount('Open ~/notes/todo.md'))
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(linked ? ['file:///home/me/notes/todo.md'] : [])
+    await ui.unmount()
+  })
+}
+
+test('the link check reads the environment once, however many replies draw', async ($, on) => {
+  claudeAt(on, '2.1.289')
+  const reads: string[] = []
+  const env: Record<string, string> = { FORCE_HYPERLINK: '1', HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu' }
+  on('env.get', (_, e) => {
+    reads.push(e.name)
+    return { value: env[e.name] }
+  })
+  for (const text of ['one', 'two', 'three']) {
+    const ui = await $.ui.mount(mount(text))
+    await ui.unmount()
+  }
+  for (const name of ['FORCE_HYPERLINK', 'TERM_PROGRAM_VERSION', 'LC_TERMINAL', 'TERMINAL_EMULATOR', 'WSL_DISTRO_NAME', 'SSH_TTY']) expect([name, reads.filter(n => n === name).length]).toEqual([name, 1])
+})
+
+test('under WSL, file:// links with a query, a fragment or one slash go through wsl.localhost too', async ($, on) => {
+  filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const ui = await $.ui.mount(mount('[/tmp/a.html](file:///tmp/a.html#s) [/tmp/b.txt](file:/tmp/b.txt) [/tmp/c](file:///tmp/c?x=1) [\\\\server\\share\\d](file:////server/share/d)'))
+  expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual([
+    'file://wsl.localhost/Ubuntu/tmp/a.html#s', 'file://wsl.localhost/Ubuntu/tmp/b.txt', 'file://wsl.localhost/Ubuntu/tmp/c?x=1', 'file:////server/share/d',
+  ])
+  await ui.unmount()
+})
+
+for (const env of [{ VTE_VERSION: '7600' }, { KONSOLE_VERSION: '230804' }, { KITTY_WINDOW_ID: '1' }] as Record<string, string>[]) {
+  test(`under WSL a Linux terminal (${Object.keys(env)[0]}) gets plain file:/// links it opens itself`, async ($, on) => {
+    filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu', ...env })
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount(mount('Open ~/notes/todo.md and [/tmp/n.md](file:///tmp/n.md)'))
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(['file:///home/me/notes/todo.md', 'file:///tmp/n.md'])
+    await ui.unmount()
+  })
+}
+
+test('/prismantis setup samples draw their made-up paths without links', async ($, on) => {
+  filesAt(on, '2.1.289')
+  const text = setupText(setupParts(PRESET_NAMES, 0))
+  expect(text).toContain('~/src/app.ts')
+  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'CommandOutput', props: { command: 'prismantis', args: 'setup', text, isErrored: false }, viewport: { columns: 120, rows: 40 } })
+  expect((await ui.findAll({ type: 'Link' })).map(l => String(l.props.href)).filter(href => href.startsWith('file:'))).toEqual([])
+  await ui.unmount()
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`/prismantis demo links its sample paths and keeps its slash command sample as text on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const text = showcaseText(PRESET_NAMES)
+    const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'CommandOutput', props: { command: 'prismantis', args: 'demo', text, isErrored: false }, viewport: { columns: 120, rows: 40 } })
+    const hrefs = (await ui.findAll({ type: 'Link' })).map(l => String(l.props.href))
+    expect([hrefs.includes('file:///tmp/app.ts'), hrefs.some(href => href.endsWith('/config'))]).toEqual([surface === 'terminal', false])
+    expect(parse(text, hl).some(b => b.kind === 'paragraph' && b.inline.some(n => n.kind === 'path' && n.text === '/config'))).toBe(true)
+    await ui.unmount()
+  })
+}
+
+const toolCall = (tool: string, input: unknown, id: string) => ({ tool_use_id: id, tool, input, isRunning: false, isErrored: false, isInterrupted: false })
+
+const linkPairs = async (ui: { findAll: (query: { type: 'Link' }) => Promise<{ props: { label?: unknown; href?: unknown } }[]> }) =>
+  (await ui.findAll({ type: 'Link' })).map(l => [l.props.label, l.props.href])
+
+const toolLinks = async ($: Engine, tool: string, input: unknown) => {
+  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolUse', props: toolCall(tool, input, `t-${tool}`) })
+  const links = await linkPairs(ui)
+  await ui.unmount()
+  return links
+}
+
+for (const toolOutput of ['full', 'quiet'] as const) {
+  test(`file paths in tool rows link to the whole file (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+    filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const root = 'file://wsl.localhost/Ubuntu'
+    expect(await toolLinks($, 'Read', { file_path: '/work/app/src/main.ts' })).toEqual([['src/main.ts', `${root}/work/app/src/main.ts`]])
+    expect(await toolLinks($, 'Edit', { file_path: '/home/me/notes/todo.md' })).toEqual([['~/notes/todo.md', `${root}/home/me/notes/todo.md`]])
+    expect(await toolLinks($, 'Write', { file_path: '/srv/one/two/three/four/five/six.ts' })).toEqual([[toolOutput === 'quiet' ? '/srv/one/…/five/six.ts' : '/srv/one/two/three/four/five/six.ts', `${root}/srv/one/two/three/four/five/six.ts`]])
+    expect(await toolLinks($, 'Grep', { pattern: 'TODO', path: 'src' })).toEqual([['src', `${root}/work/app/src`]])
+    expect(await toolLinks($, 'Glob', { pattern: '*.ts' })).toEqual([])
+    expect(await toolLinks($, 'Bash', { command: 'cat /srv/app/main.ts' })).toEqual([])
+    expect(await toolLinks($, 'mcp__github__get_file_contents', { owner: 'o', repo: 'r', path: 'README.md' })).toEqual([])
+  })
+
+  test(`a tool group links its file paths (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const calls = [toolCall('Read', { file_path: '/work/app/a.ts' }, 'g-1'), toolCall('Read', { file_path: '/work/app/b.ts' }, 'g-2')]
+    const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolGroup', props: { calls, isActive: false, isExpanded: false } })
+    const b = ['b.ts', 'file:///work/app/b.ts']
+    expect(await linkPairs(ui)).toEqual(toolOutput === 'quiet' ? [['a.ts', 'file:///work/app/a.ts'], b] : [b])
+    await ui.unmount()
+  })
+}
+
+test('Windows paths in tool rows link with forward slashes, and UNC paths name their server', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  expect(await toolLinks($, 'Grep', { pattern: 'x', path: 'src\\hooks' })).toEqual([['src\\hooks', 'file:///work/app/src/hooks']])
+  expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
+  expect(await toolLinks($, 'Read', { file_path: '\\\\server\\share\\x.txt' })).toEqual([['\\\\server\\share\\x.txt', 'file://server/share/x.txt']])
+})
+
+test('under WSL a drive path in a tool row is already a Windows path, so it links without wsl.localhost', async ($, on) => {
+  filesAt(on, '2.1.289', { WSL_DISTRO_NAME: 'Ubuntu' })
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  expect(await toolLinks($, 'Read', { file_path: 'C:\\Users\\me\\x.ts' })).toEqual([['C:\\Users\\me\\x.ts', 'file:///C:/Users/me/x.ts']])
+  expect(await toolLinks($, 'Edit', { file_path: 'C:/Users/me/y.ts' })).toEqual([['C:/Users/me/y.ts', 'file:///C:/Users/me/y.ts']])
+  expect(await toolLinks($, 'Read', { file_path: '/work/app/z.ts' })).toEqual([['z.ts', 'file://wsl.localhost/Ubuntu/work/app/z.ts']])
+})
+
+test('a tool path whose link would pass 2048 characters stays text, and the row still draws', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  expect(await toolLinks($, 'Read', { file_path: `/work/app/${'文档/'.repeat(110)}说明.md` })).toEqual([])
+  expect(await toolLinks($, 'Read', { file_path: '/work/app/a b#c?d%e é.ts' })).toEqual([['a b#c?d%e é.ts', 'file:///work/app/a%20b%23c%3Fd%25e%20%C3%A9.ts']])
+})
+
+test('shell edit cards link their file headers', async ($, on) => {
+  filesAt(on, '2.1.289')
+  if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+  const output = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/work/app/src/app.ts', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }], moreFiles: 0 } }
+  const ui = await $.ui.mount({ plugin: 'prismantis', surface: 'terminal', component: 'ToolResult', props: { tool_use_id: 'be-1', tool: 'Bash', output, isErrored: false } })
+  expect(await linkPairs(ui)).toEqual([['src/app.ts', 'file:///work/app/src/app.ts']])
+  expect((await ui.find({ type: 'Text', text: /^src\/app\.ts $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+  await ui.unmount()
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`tool rows and file:// links still link a one-part absolute path on ${surface}`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (surface === 'terminal' && !(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const row = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/etc' }, 'one-part') })
+    expect(await linkPairs(row)).toEqual(surface === 'terminal' ? [['/etc', 'file:///etc']] : [])
+    await row.unmount()
+    const reply = await $.ui.mount({ ...mount('[/config](file:///config)'), surface })
+    expect((await reply.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? ['file:///config'] : [])
+    await reply.unmount()
+  })
+}
+
+for (const [where, surface, base, env] of [
+  ['on desktop', 'desktop', '2.1.289', {}],
+  ['on Claude Code 2.1.288', 'terminal', '2.1.288', {}],
+  ['in a terminal that draws no hyperlinks', 'terminal', '2.1.289', { FORCE_HYPERLINK: '0' }],
+  ['in a session over SSH', 'terminal', '2.1.289', { SSH_TTY: '/dev/pts/3' }],
+] as const) {
+  test(`tool rows keep plain paths ${where}`, async ($, on) => {
+    filesAt(on, base, env)
+    const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall('Read', { file_path: '/work/app/src/main.ts' }, 'p-1') })
+    expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+    expect((await ui.find({ type: 'Text', text: /^src\/main\.ts$/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+    await ui.unmount()
+  })
+}
+
 test('links that cannot be clicked draw as plain text with their target, as Claude Code draws them', async $ => {
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ ...mount('[mail](mailto:someone@example.com) [someone@example.com](mailto:someone@example.com) [disk](file:///etc/passwd)'), surface })
@@ -645,7 +1137,7 @@ test('double underscores inside a word stay literal, as in mcp__serena__activate
   expect(block?.kind === 'paragraph' ? inlineText(block.inline) : null).toBe('Call mcp__serena__activate_project, not this.')
 })
 
-test('a flowchart whose long edge label makes it too wide draws with the label shortened, not as source', async ($, on) => {
+test('a flowchart whose long edge label makes it too wide draws with the label shortened, not as source', async $ => {
   const source = [
     'flowchart TD',
     '  A["Tank sensor<br/>posts a reading every 10s"] --> B["POST to ingest :8080"]',
@@ -667,7 +1159,7 @@ test('a flowchart whose long edge label makes it too wide draws with the label s
   await ui.unmount()
 })
 
-test('inline HTML tags in mermaid labels draw as italic and bold, not as tags', async ($, on) => {
+test('inline HTML tags in mermaid labels draw as italic and bold, not as tags', async $ => {
   const art = mermaidText('flowchart TD\n  A["metrics-server<br/><i>one slow scrape</i>"] --> B["<b>kubelet</b>"]', false, 80)!
   expect(art).toContain('one slow scrape')
   expect(art).toContain('kubelet')
@@ -971,7 +1463,7 @@ test('a diagram the renderer cannot draw shows its source under a failure note',
 })
 
 test('a diagram type the renderer has no drawing for says so instead of failing', async $ => {
-  for (const kind of ['pie', 'gantt', 'mindmap', 'timeline', 'journey', 'gitGraph']) {
+  for (const kind of ['mindmap', 'timeline', 'journey', 'gitGraph']) {
     const ui = await $.ui.mount(mount('```mermaid\n' + kind + '\n  title T\n```'))
     expect(await ui.find({ type: 'Text', text: `${kind} diagrams draw as source for now` })).toBeDefined()
     expect(await ui.find({ type: 'Text', text: /^diagram failed to render$/ })).toBeUndefined()
@@ -980,12 +1472,130 @@ test('a diagram type the renderer has no drawing for says so instead of failing'
 })
 
 test('a half-streamed diagram shows no note until its fence closes', async $ => {
-  const open = await $.ui.mount(mount('```mermaid\npie\n  "a" : 3'))
+  const open = await $.ui.mount(mount('```mermaid\nmindmap\n  root'))
   expect(await open.find({ type: 'Text', text: /diagram|draw as source/ })).toBeUndefined()
   await open.unmount()
-  const closed = await $.ui.mount(mount('```mermaid\npie\n  "a" : 3\n```'))
-  expect(await closed.find({ type: 'Text', text: /^pie diagrams draw as source for now$/ })).toBeDefined()
+  const closed = await $.ui.mount(mount('```mermaid\nmindmap\n  root\n```'))
+  expect(await closed.find({ type: 'Text', text: /^mindmap diagrams draw as source for now$/ })).toBeDefined()
   await closed.unmount()
+})
+
+test('a pie chart draws one bar per slice, largest first, with its share', () => {
+  const art = mermaidText('pie showData title Pets\n  "Cats" : 85\n  "Dogs" : 386\n  "Rats" : 0\n  "Mice" : 0.5', false, 80)!.split('\n')
+  expect(art[0]).toBe('Pets')
+  expect(art.slice(1).map(l => l.split(' ')[0])).toEqual(['Dogs', 'Cats', 'Mice', 'Rats'])
+  expect(art[1]).toMatch(/█ 386  82%$/)
+  expect(art[3]).toMatch(/<1%$/)
+  expect(art[4]).not.toContain('█')
+  expect(new Set(art.slice(1).map(l => width(l))).size).toBe(1)
+})
+
+test('a round pie draws a circle with a legend, largest slice first', () => {
+  const art = mermaidText('pie showData title Pets\n  "Cats" : 85\n  "Dogs" : 386\n  "Rats" : 15', false, 80, 7)!.split('\n')
+  expect(art[0]).toBe('Pets')
+  expect(art).toHaveLength(13)
+  expect(art[1]).toMatch(/^ +▄▄▟█+▙▄▄$/)
+  expect(art[12]).toMatch(/^ +▀▀▜█+▛▀▀$/)
+  expect(art.slice(5, 8).map(l => l.split('   ██ ')[1])).toEqual(['Dogs 386  79%', 'Cats  85  17%', 'Rats  15   3%'])
+})
+
+test('a round pie falls back to bars in ascii mode, past seven slices and when the terminal is too narrow', () => {
+  const pie = 'pie\n  "Dogs" : 386\n  "Cats" : 85'
+  const many = `pie\n${[1, 2, 3, 4, 5, 6, 7, 8].map(n => `  "s${n}" : ${n}`).join('\n')}`
+  for (const [source, ascii, columns] of [[pie, true, 80], [many, false, 80], [pie, false, 30]] as const)
+    expect(mermaidText(source, ascii, columns, 7)).toBe(mermaidText(source, ascii, columns, 0))
+  expect(mermaidText(pie, false, 80, 7)).toContain('▟')
+})
+
+test('each round pie slice and its legend swatch share one color', async $ => {
+  const source = '```mermaid\npie title Pets\n  "Dogs" : 386\n  "Cats" : 85\n  "Rats" : 15\n```'
+  const ui = await $.ui.mount(mount(source))
+  const texts = await ui.findAll({ type: 'Text' })
+  const swatches = [' Dogs 79%', ' Cats 17%', ' Rats  3%'].map(label => texts[texts.findIndex(n => n.text === label) - 1]?.props.color)
+  expect(new Set(swatches).size).toBe(3)
+  expect((await ui.find({ type: 'Text', text: /^▜█+▛$/ }))?.props.color).toBe(swatches[0])
+  await ui.unmount()
+})
+
+const runs = async (ui: { findAll: (q: { type: string }) => Promise<{ text?: string; props: { color?: string } }[]> }) => (await ui.findAll({ type: 'Text' })).map(n => `${n.text}|${n.props.color}`)
+
+const fiveSlices = '```mermaid\npie\n  "a" : 5\n  "b" : 4\n  "c" : 3\n  "d" : 2\n  "e" : 1\n```'
+const fourSlices = '```mermaid\npie\n  "a" : 4\n  "b" : 3\n  "c" : 2\n  "d" : 1\n```'
+
+for (const [theme, source, round] of [['dracula', fiveSlices, false], ['dracula', fourSlices, true], ['mono', fourSlices, false], ['catppuccin-mocha', fiveSlices, true]] as const)
+  test(`a round pie of ${source === fiveSlices ? 5 : 4} slices in ${theme} draws ${round ? 'round' : 'bars'}, since each slice needs its own theme color`, { options: { theme } }, async $ => {
+    const ui = await $.ui.mount(mount(source))
+    expect(!!(await ui.find({ type: 'Text', text: /▟/ }))).toBe(round)
+    await ui.unmount()
+  })
+
+test('two pies that draw the same art but split it differently each keep their own slice colors', async $ => {
+  const pie = (a: number, b: number) => '```mermaid\npie\n  "A" : ' + a + '\n  "B" : ' + b + '\n```'
+  const drawn: string[][] = []
+  for (const [a, b] of [[5103, 4897], [5104, 4896], [5103, 4897]] as const) {
+    const ui = await $.ui.mount(mount(pie(a, b)))
+    drawn.push(await runs(ui))
+    await ui.unmount()
+  }
+  expect(drawn[0]!.filter(r => !r.includes('|undefined')).join()).not.toBe(drawn[1]!.filter(r => !r.includes('|undefined')).join())
+  expect(drawn[2]).toEqual(drawn[0])
+})
+
+test('pieStyle bars draws one bar per slice', { options: { pieStyle: 'bars' } }, async $ => {
+  const ui = await $.ui.mount(mount('```mermaid\npie title Pets\n  "Dogs" : 386\n  "Cats" : 85\n```'))
+  expect(await ui.find({ type: 'Text', text: /▟/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^Dogs  / })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a gantt chart places each task on a shared time axis', () => {
+  const art = mermaidText('gantt\n  dateFormat YYYY-MM-DD\n  section Build\n  Parse :p, 2026-10-01, 7d\n  Draw :after p, 7d\n  Ship :milestone, 2026-10-15, 0d', false, 80)!.split('\n')
+  expect(art[0]!.trim().startsWith('10-01')).toBe(true)
+  expect(art[1]!.trim()).toMatch(/^▏(─+▏)+$/)
+  const span = (line: string) => [line.indexOf('█'), line.lastIndexOf('█')]
+  const [parse, draw] = [span(art[3]!), span(art[4]!)]
+  expect(draw[0]).toBe(parse[1]! + 1)
+  expect(draw[1]! - draw[0]!).toBe(parse[1]! - parse[0]!)
+  expect(art[5]!.indexOf('◆')).toBe(draw[1])
+  expect(art[2]).toBe('Build')
+})
+
+const FINE_GANTT = 'gantt\n  dateFormat YYYY-MM-DD\n  section Build\n  Two days :a, 2026-10-01, 2d\n  Two and a bit :b, 2026-10-01, 2.4d\n  Two and a half :c, 2026-10-01, 2.5d\n  Rest :d, after a, 5d'
+
+test('gantt bars end on an eighth of a cell and start on a half, so close durations draw apart', () => {
+  const art = mermaidText(FINE_GANTT, false, 80)!.split('\n')
+  const bar = (name: string) => art.find(l => l.trimStart().startsWith(name))!.slice(18)
+  expect(new Set(['Two days', 'Two and a bit', 'Two and a half'].map(bar)).size).toBe(3)
+  expect(bar('Two days')).toMatch(/^█+[▎▍▌▋▊▉]$/)
+  expect(bar('Rest').trimStart()).toMatch(/^▐█+$/)
+  expect(mermaidText('gantt\n  dateFormat YYYY-MM-DD\n  A :a, 2026-10-01, 2d', true, 80)).not.toMatch(/[▐▏▎▍▌▋▊▉]/)
+})
+
+test('a gantt bar end drawn in part of a cell takes its bar color, while axis ticks keep theirs', async $ => {
+  const ui = await $.ui.mount(mount('```mermaid\n' + FINE_GANTT + '\n```', 80))
+  expect(await ui.find({ type: 'Text', text: /^█+[▎▍▌▋▊▉]$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^▐█+$/ })).toBeDefined()
+  expect((await ui.find({ type: 'Text', text: /^▏(─+▏)+─*$/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].diagram)
+  await ui.unmount()
+})
+
+test('pie and gantt sources the chart cannot read show a failure note, not a broken chart', async $ => {
+  for (const source of ['pie\n  "a" : -1', 'pie\n  "a" : 0', 'gantt\n  Task : 3d', 'gantt\n  dateFormat X\n  Task : 1, 2', 'gantt\n  Task : after nope, 1d']) {
+    expect(mermaidText(source, false, 80)).toBeNull()
+    const ui = await $.ui.mount(mount('```mermaid\n' + source + '\n```'))
+    expect(await ui.find({ type: 'Text', text: /^diagram failed to render$/ })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('pie and gantt charts shrink to a narrow terminal and use plain glyphs in ascii mode', () => {
+  const pie = 'pie\n  "A very long slice label that goes on" : 3\n  "b" : 1'
+  const gantt = 'gantt\n  dateFormat HH:mm\n  Deploy : 10:00, 45m\n  Verify : 30m'
+  for (const source of [pie, gantt]) {
+    expect(Math.max(...mermaidText(source, false, 50)!.split('\n').map(width)) <= 48).toBe(true)
+    expect(mermaidText(source, true, 80)).not.toMatch(/[█▏─◆]/)
+  }
+  expect(mermaidText(gantt, false, 80)).toContain('10:00')
 })
 
 test('a diagram that fits draws without a note', async $ => {
@@ -1199,7 +1809,8 @@ for (const surface of ['terminal', 'desktop'] as const) test(`a code block and a
   const source = `Before.\n\n> Run it:\n>\n> \`\`\`bash\n> npm test\n> \`\`\`\n>\n${table.split('\n').map(line => `> ${line}`).join('\n')}`
   const ui = await $.ui.mount({ ...mount(source, 60), surface })
   expect(await ui.find({ type: 'Text', text: /^── bash$/ })).toBeDefined()
-  expect((await ui.find({ type: 'Text', text: /^npm$/ }))?.props.color).toBe(t.codeCommand)
+  if (surface === 'desktop') expect((await ui.find({ type: 'Code' }))?.props.source).toBe('npm test')
+  else expect((await ui.find({ type: 'Text', text: /^npm$/ }))?.props.color).toBe(t.codeCommand)
   expect((await ui.find({ type: 'Text', text: /^Check$/ }))?.props.color).toBe(t.tableHeader)
   const edge = await ui.find({ type: 'Text', text: /^┌[─┬]+┐$/ })
   expect(width('│ ') + width(edge!.text) + 2 + width('[ ⧉ copy ]') <= 60 - 4).toBe(true)
@@ -1265,10 +1876,88 @@ test('footnotes follow quotes and fences: a quoted fence marker inside code make
 for (const copyButtonStyle of ['inline', 'hover'] as const) test(`a quote that opens with code puts its own ${copyButtonStyle} copy button on its last row`, { options: { copyButtonStyle } }, async $ => {
   const ui = await $.ui.mount(mount('> ```bash\n> npm test\n> ```\n>\n> Run that first.\n\n> One line.'))
   const boxes = await ui.findAll({ type: 'Box' })
-  const low = boxes.filter(b => (copyButtonStyle === 'hover' ? b.props.display === 'none' && b.props.bottom === 0 && b.props.left === 0 : b.props.alignSelf === 'flex-end' && b.key !== 'reply'))
+  const low = boxes.filter(b => (copyButtonStyle === 'hover' ? b.props.display === 'none' && b.props.bottom === 0 && b.props.right === 0 && b.text !== '⧉ copy reply' : b.props.alignSelf === 'flex-end' && b.key !== 'reply'))
   expect(low.map(b => b.text)).toEqual(['⧉ copy'])
-  expect(boxes.filter(b => b.props.position === 'absolute' && b.props.top === 0 && b.props.display === 'none').map(b => b.text)).toEqual(copyButtonStyle === 'hover' ? ['⧉ copy', '⧉ copy'] : [])
+  expect(boxes.filter(b => b.props.position === 'absolute' && b.props.top === 0 && b.props.display === 'none' && b.text !== '⧉ copy reply').map(b => b.text)).toEqual(copyButtonStyle === 'hover' ? ['⧉ copy', '⧉ copy'] : [])
   await ui.unmount()
+})
+
+type FloatNode = { type?: string; props?: Record<string, unknown>; children?: unknown[] }
+const floatKids = (node: FloatNode) => (node.children ?? []).filter((child): child is FloatNode => !!child && typeof child === 'object')
+const floatLabels = (node: FloatNode): string[] => (node.type === 'Button' ? [String(node.props?.label)] : floatKids(node).flatMap(floatLabels))
+const floatRoom = (node: FloatNode, room = 0): { labels: string[]; needs: number; room: number }[] => {
+  if (node.props?.position === 'absolute' && node.props.display === 'none') {
+    const labels = floatLabels(node)
+    return [{ labels, needs: labels.reduce((w, label) => w + (w ? 1 : 0) + width(`[ ${label} ]`), 0), room }]
+  }
+  const here = typeof node.props?.minWidth === 'number' ? node.props.minWidth : room
+  return floatKids(node).flatMap(child => floatRoom(child, here))
+}
+const hoverFloats = async (ui: { findAll: (query: { type: string }) => Promise<{ props: Record<string, unknown>; text?: string }[]> }) =>
+  (await ui.findAll({ type: 'Box' })).filter(b => b.props.position === 'absolute' && b.props.display === 'none' && b.text !== '⧉ copy reply')
+
+test('copyButtonStyle hover reserves every floating button\'s width on the block it floats over', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount(mount('| a |\n|---|\n| 1 |\n\n```\nx\n```\n\n- y\n\n> z\n\n> [!NOTE]\n> w\n\n> ```\n> q\n> ```\n\n- item\n  ```\n  v\n  ```\n\n```mermaid\nflowchart LR\n  A --> B\n```'))
+  const floats = floatRoom((await ui.drawn()) as FloatNode).filter(f => !f.labels.includes('⧉ copy reply'))
+  expect(floats.length).toBeGreaterThanOrEqual(9)
+  for (const float of floats) expect({ ...float, fits: float.room >= float.needs }).toMatchObject({ fits: true })
+  await ui.unmount()
+})
+
+test('copyButtonStyle hover puts the button of a quote whose nested quote opens with code on its last row, clear of the code\'s own', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  const ui = await $.ui.mount(mount('> > ```bash\n> > ls\n> > ```\n>\n> text'))
+  const floats = await hoverFloats(ui)
+  expect(floats.filter(b => b.props.top === 0).map(b => b.text)).toEqual(['⧉ copy'])
+  expect(floats.filter(b => b.props.bottom === 0).map(b => b.text)).toEqual(['⧉ copy'])
+  await ui.unmount()
+})
+
+test('copyButtonStyle hover gives a quote holding only an empty code block one button, so two never share its single row', { options: { copyButtonStyle: 'hover' } }, async $ => {
+  for (const text of ['> ```\n> ```', '> > ```\n> > ```']) {
+    const ui = await $.ui.mount(mount(text))
+    expect((await hoverFloats(ui)).map(b => b.text)).toEqual(['⧉ copy'])
+    await ui.unmount()
+  }
+})
+
+test('copyButtonStyle hover keeps Hebrew quotes and alerts on the right, as inline does', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
+  for (const text of ['> שלום עולם', '> [!NOTE]\n> שלום עולם']) {
+    const ui = await $.ui.mount(mount(text))
+    expect((await ui.find({ key: 'c0' }))?.props.alignSelf).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
+test('copyButtonStyle hover anchors the buttons of a right-to-left block at its left, where its lines end', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
+  const anchors = async (text: string) => {
+    const ui = await $.ui.mount(mount(text))
+    const sides = (await hoverFloats(ui)).map(b => (b.props.left === 0 && b.props.right === undefined ? 'left' : b.props.right === 0 && b.props.left === undefined ? 'right' : 'both'))
+    await ui.unmount()
+    return sides
+  }
+  expect(await anchors('- שלום עולם\n- עוד פריט')).toEqual(['left'])
+  expect(await anchors('> שלום עולם')).toEqual(['left'])
+  expect(await anchors('> [!NOTE]\n> שלום עולם')).toEqual(['left'])
+  expect(await anchors('| שם | ערך |\n|---|---|\n| אחד | שתיים |')).toEqual(['left'])
+  expect(await anchors('- hello שלום\n- world')).toEqual(['right'])
+  expect(await anchors('- hello\n- world')).toEqual(['right'])
+})
+
+test('copyButtonStyle hover puts the ⧉ of a right-to-left block at its left, where its lines end', { options: { copyButtonStyle: 'hover', rtl: 'warp' } }, async $ => {
+  const side = async (text: string) => {
+    const ui = await $.ui.mount(mount(text))
+    const row = (await ui.find({ key: 'c0' }))!.children[0] as FloatNode
+    const flow = floatKids(row).filter(child => child.props?.position !== 'absolute')
+    const marked = (child?: FloatNode) => !!(child as { hover?: { scope?: string } } | undefined)?.hover?.scope
+    await ui.unmount()
+    return marked(flow[0]) ? 'left' : marked(flow.at(-1)) ? 'right' : 'none'
+  }
+  expect(await side('- שלום עולם\n- עוד פריט')).toBe('left')
+  expect(await side('> שלום עולם')).toBe('left')
+  expect(await side('> [!NOTE]\n> שלום עולם')).toBe('left')
+  expect(await side('| שם | ערך |\n|---|---|\n| אחד | שתיים |')).toBe('left')
+  expect(await side('- hello שלום\n- world')).toBe('right')
+  expect(await side('- hello\n- world')).toBe('right')
 })
 
 for (const surface of ['terminal', 'desktop'] as const) test(`display math inside a quote or a list item draws as text on ${surface}`, async $ => {
@@ -1296,4 +1985,86 @@ test('quotes nested past eight levels keep their text and parse in linear time',
   }
   expect(depth).toBe(8)
   expect(at?.kind === 'paragraph' && inlineText(at.inline).endsWith('> deep')).toBe(true)
+})
+
+const PROGRAMS = [
+  '/Applications/Calculator.app', '/tmp/run/x.command', '/tmp/run/x.exe', '/tmp/run/x.bat', '/tmp/run/x.cmd', '/tmp/run/x.ps1', '/tmp/run/x.vbs', '/tmp/run/x.js',
+  '/tmp/run/x.hta', '/tmp/run/x.lnk', '/tmp/run/x.desktop', '/tmp/run/x.sh', '/tmp/run/x.msi', '/tmp/run/x.scr', '/tmp/run/x.jar', '/tmp/run/x.py', '/tmp/run/x.url',
+  '/tmp/run/x.AppImage', '/tmp/run/X.EXE', '/tmp/run/Setup.Command', '/tmp/run/x.Sh', '/tmp/run/x.pdf.exe', '/Applications/Calculator.app/', '/Applications/Calculator.app/Contents/MacOS/Calculator',
+]
+
+const DOCUMENTS = ['/tmp/doc/a.ts', '/tmp/doc/a.md', '/tmp/doc/a.json', '/tmp/doc/a.png', '/tmp/doc/a.txt', '/tmp/doc/a.html', '/tmp/doc/a.exe.txt', '/tmp/doc/scripts/', '/tmp/chart.js/README.md']
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`paths to programs and launchers stay plain colored text on ${surface}, while documents link`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const ui = await $.ui.mount({ ...mount([...PROGRAMS, ...DOCUMENTS].join(' and '), 1000), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.label)).toEqual(surface === 'terminal' ? DOCUMENTS : [])
+    for (const path of PROGRAMS) expect([path, (await ui.find({ type: 'Text', text: exact(path) }))?.props.color]).toEqual([path, PRESETS['catppuccin-mocha'].path])
+    await ui.unmount()
+  })
+
+  test(`file:// links to programs and launchers draw as text on ${surface}, whatever their case, slash, query, fragment or encoding`, async ($, on) => {
+    filesAt(on, '2.1.289')
+    if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+    const programs = ['file:///tmp/x.exe?y=1', 'file:///tmp/x.EXE#top', 'file:///Applications/Calculator.app/', 'file:///tmp/x%2Ecommand', 'file:///C:/x.exe.', 'file:///C:/x.exe::$DATA', 'file:///tmp/x.exe%00.txt', 'file://server/share/setup.msi']
+    const documents = ['file:///tmp/a.html#x.exe', 'file:///tmp/report.md?open=x.exe', 'file:///tmp/x.exe.txt']
+    const ui = await $.ui.mount({ ...mount([...programs, ...documents].map(href => `[${href}](${href})`).join(' and '), 1000), surface })
+    expect((await ui.findAll({ type: 'Link' })).map(l => l.props.href)).toEqual(surface === 'terminal' ? documents : [])
+    for (const href of programs) expect([href, await ui.find({ type: 'Text', text: exact(href) }) !== undefined]).toEqual([href, true])
+    await ui.unmount()
+  })
+
+  for (const toolOutput of ['full', 'quiet'] as const) {
+    test(`tool rows and shell edit cards keep programs and launchers as plain colored text on ${surface} (toolOutput ${toolOutput})`, { options: { toolOutput } }, async ($, on) => {
+      filesAt(on, '2.1.289')
+      if (!(await linksHttp($.ui.mount(mount('[/x](file:///x)'))))) return
+      let calls = 0
+      const row = async (tool: string, input: unknown) => {
+        const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolUse', props: toolCall(tool, input, `launcher-${calls++}`) })
+        const links = await linkPairs(ui)
+        await ui.unmount()
+        return links
+      }
+      expect(await row('Read', { file_path: '/work/app/install.sh' })).toEqual([])
+      expect(await row('Edit', { file_path: 'C:\\Users\\me\\run.PS1' })).toEqual([])
+      expect(await row('Read', { file_path: '\\\\server\\share\\setup.exe' })).toEqual([])
+      expect(await row('Grep', { pattern: 'x', path: '/Applications/Calculator.app/' })).toEqual([])
+      expect(await row('Read', { file_path: '/work/app/src/app.ts' })).toEqual(surface === 'terminal' ? [['src/app.ts', 'file:///work/app/src/app.ts']] : [])
+      const grouped = [toolCall('Read', { file_path: '/work/app/src/app.ts' }, 'launcher-g1'), toolCall('Read', { file_path: '/work/app/install.sh' }, 'launcher-g2')]
+      const group = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolGroup', props: { calls: grouped, isActive: false, isExpanded: false } })
+      expect(await linkPairs(group)).toEqual(surface === 'terminal' && toolOutput === 'quiet' ? [['src/app.ts', 'file:///work/app/src/app.ts']] : [])
+      await group.unmount()
+      const output = { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [{ filePath: '/work/app/build.sh', hunks: [{ oldStart: 0, oldLines: 0, newStart: 1, newLines: 1, lines: ['+one'] }] }], moreFiles: 0 } }
+      const ui = await $.ui.mount({ plugin: 'prismantis', surface, component: 'ToolResult', props: { tool_use_id: 'launcher-card', tool: 'Bash', output, isErrored: false } })
+      expect(await ui.findAll({ type: 'Link' })).toHaveLength(0)
+      expect((await ui.find({ type: 'Text', text: /^build\.sh $/ }))?.props.color).toBe(PRESETS['catppuccin-mocha'].path)
+      await ui.unmount()
+    })
+  }
+}
+
+test('a clickable Bash-edits diff keeps its linked file title as text, since a Button holds no Link', async ($, on) => {
+  const style = { ...resolveStyle({}), pressPreview: true, httpLinks: true, fileLinks: 'file://', pathLinks: true, home: '/home/me', cwd: '/work/app' }
+  const rows = Array.from({ length: 30 }, (_, i) => ({ mark: '+' as const, num: i + 1, text: `line ${i}`, hunk: 0 }))
+  let drawn: unknown
+  on('ui.render', ($, e) => {
+    const el = $.ui.resolve(e)
+    const fold = (_id: string, _hidden: number, key: string) => ({ folded: true, faced: false, element: <el.Button key={key} label="more" onPress={() => {}} />, around: (r: never) => <el.Button key={`${key}.rows`} plain label="more" onPress={() => {}}>{r}</el.Button> })
+    drawn = renderBashEdits(el, style, { files: [{ kind: 'modified', path: '/work/app/src/a.ts', rows }], more: 0, shared: false }, fold as never, 'x')
+    return <el.Text>engine</el.Text>
+  })
+  const ui = await $.ui.mount(mount('')).catch(() => undefined)
+  if (!ui) return
+  await ui.unmount()
+  const linkUnderButton = (node: unknown, inButton = false): boolean => {
+    if (node === null || typeof node !== 'object') return false
+    const n = node as { type?: string; props?: { children?: unknown } ; children?: unknown }
+    if (inButton && n.type === 'Link') return true
+    const kids = [n.children, n.props?.children].flat(Infinity)
+    return kids.some(c => linkUnderButton(c, inButton || n.type === 'Button'))
+  }
+  expect(drawn).toBeDefined()
+  expect(linkUnderButton(drawn)).toBe(false)
 })
