@@ -45,6 +45,8 @@ declare module 'claude-code' {
       inView: string | null
       // The steps expanded in the pane, by id.
       open: string[]
+      // The surfaces (`e.surface`) the pane is folded to one row on.
+      folded: string[]
     }
   }
 }

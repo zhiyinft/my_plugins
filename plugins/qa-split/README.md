@@ -3,15 +3,15 @@
 Two panels for Claude Code. The transcript keeps the conversation: your prompts and Claude's answers. Everything behind an answer (each tool call, the notes Claude writes between calls, its thinking) moves to a **Details** pane docked beside it.
 
 ```
-┌─ transcript ───────────────────────────┐┌─ Details ─────────────┐
-│ > why does the band flicker?           ││ ◄ ►  1/2     follow ↓ │
-│   ⎿  1m 4s · 6 tool calls  ▸ Details   ││ ❯ why does the band   │
-│ ● It redraws on every tick...          ││   flicker?            │
-│ > now add a test                       ││ ───────────────────── │
-│   ⎿  working… · 3 tool calls           ││ │ Let me read the     │
-│                                        ││ │ band code.          │
-│                                        ││ ✓ Read hooks/band.tsx │
-└────────────────────────────────────────┘└───────────────────────┘
+┌─ transcript ─────────────────────────┐┌─ Details ───────────────┐
+│ > why does the band flicker?         ││ ◄ ► 1/2 follow ↓ ▾ hide │
+│   ⎿  1m 4s · 6 tool calls  ▸ Details ││ ❯ why does the band     │
+│ ● It redraws on every tick...        ││   flicker?              │
+│ > now add a test                     ││ ─────────────────────── │
+│   ⎿  working… · 3 tool calls         ││ │ Let me read the       │
+│                                      ││ │ band code.            │
+│                                      ││ ✓ Read hooks/band.tsx   │
+└──────────────────────────────────────┘└─────────────────────────┘
 ```
 
 ## Use
@@ -19,10 +19,11 @@ Two panels for Claude Code. The transcript keeps the conversation: your prompts 
 - The pane shows the turn you are reading: the one at the top of the transcript, or the newest one when you are at the bottom.
 - Under each prompt that had tool calls, a line sums up the work. Click it to show that turn in the pane; click again, or scroll to another turn, and the pane follows the transcript again.
 - In the pane, click a tool call to see its input (edits as −/+ lines) and the start of its output. ◄ ► (`p` / `n` while the pane has focus) step through turns.
+- **▾ hide** (`h`) folds the pane to one row: the turn it holds and what its work came to. Tap that row, or **show**, to open it again. A fold stays on the screen you made it on: folded on your phone, still open in the terminal.
 - A text block Claude writes before a tool call is a note and goes to the pane; the last text of a turn is the answer and stays in the transcript. Questions Claude asks you (`AskUserQuestion`) and plans to approve stay in the transcript too.
 - `/qa-split off` puts everything back in the transcript; so does closing the pane. `/qa-split` turns it on again, and so does the **Details pane** switch in the mods pane (`/mods`, from the mod-settings plugin).
 
-The pane docks beside the transcript in the fullscreen terminal. Opened at the start of a session it needs 144 columns; `/qa-split` opens it from 110. Narrower, or on the main screen, it sits above the prompt.
+The pane docks beside the transcript in the fullscreen terminal. Opened at the start of a session it needs 144 columns; `/qa-split` opens it from 110. Narrower, on the main screen, or in the mobile app, it sits above the prompt: Claude Code places panes and a mod can't move one to the top, so fold it there to give the room back to the conversation.
 
 ## With other mods
 

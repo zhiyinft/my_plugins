@@ -184,6 +184,20 @@ test('the pane lists the turn: its prompt, the note, the call; a press expands t
   }
 })
 
+test('hide folds the pane to one row on that surface alone; show unfolds it', async ($, on) => {
+  await setUp($, on)
+  const phone = await $.ui.mount({ plugin: 'qa-split', surface: 'mobile', component: 'Pane', requestId: 'qa-split', props: { ...PANE_PROPS, placement: 'inline' as const } })
+  const terminal = await $.ui.mount({ plugin: 'qa-split', surface: 'terminal', component: 'Pane', requestId: 'qa-split', props: PANE_PROPS })
+  await phone.press({ key: 'hide' })
+  expect(await phone.find({ key: 'step-toolu_1' })).toBeUndefined()
+  expect(await phone.find({ type: 'Text', text: 'why does the band flicker?' })).toBeUndefined()
+  expect((await phone.find({ key: 'unfold' }))?.text).toMatch(/Details · 1\/1 · 1 tool call/)
+  expect(await terminal.find({ key: 'step-toolu_1' })).toBeDefined()
+  await phone.press({ key: 'show' })
+  expect(await phone.find({ key: 'step-toolu_1' })).toBeDefined()
+  expect(await phone.find({ key: 'unfold' })).toBeUndefined()
+})
+
 test('a line under each prompt shows its turn in the pane; a second click follows again', async ($, on) => {
   mock.clock(on)
   await setUp($, on, [...turnRows, ...secondTurn])

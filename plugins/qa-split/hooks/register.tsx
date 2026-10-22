@@ -57,6 +57,7 @@ const modeAtom = atom({ plugin: 'qa-split', key: 'mode' } as const, { isOff: fal
 const pinnedAtom = atom({ plugin: 'qa-split', key: 'pinned' } as const, null)
 const inViewAtom = atom({ plugin: 'qa-split', key: 'inView' } as const, null)
 const openAtom = atom({ plugin: 'qa-split', key: 'open' } as const, [])
+const foldedAtom = atom({ plugin: 'qa-split', key: 'folded' } as const, [])
 const STEPS = { plugin: 'qa-split', key: 'steps' } as const
 const HIDDEN = { plugin: 'qa-split', key: 'hidden' } as const
 
@@ -235,6 +236,12 @@ async function holdTurn($: EngineInterface, id: string | null) {
   await update($, pinnedAtom, () => id)
 }
 
+// Fold the pane to one row on this surface (a phone, where it sits above the
+// prompt), or unfold it. The other surfaces keep theirs.
+async function setFolded($: EngineInterface, surface: string, isFolded: boolean) {
+  await update($, foldedAtom, list => [...list.filter(s => s !== surface), ...(isFolded ? [surface] : [])])
+}
+
 // Off: the details go back into the transcript.
 async function turnOff($: EngineInterface) {
   await update($, modeAtom, mode => ({ ...mode, isOff: true, isShown: false }))
@@ -378,11 +385,15 @@ function drawPane(
           <Button key="next" plain hotkey="n" dimColor={index >= turns.length - 1} label="►" onPress={() => goTo(index + 1)} />
           <Text dimColor>{`  ${index + 1}/${turns.length}`}</Text>
         </Box>
-        {pinned !== null ? (
-          <Button key="follow" plain hotkey="f" label="follow ↓" onPress={() => void holdTurn($, null)} />
-        ) : (
-          <Text dimColor>following</Text>
-        )}
+        <Box flexDirection="row">
+          {pinned !== null ? (
+            <Button key="follow" plain hotkey="f" label="follow ↓" onPress={() => void holdTurn($, null)} />
+          ) : (
+            <Text dimColor>following</Text>
+          )}
+          <Text>{'  '}</Text>
+          <Button key="hide" plain hotkey="h" dimColor label="▾ hide" onPress={() => void setFolded($, e.surface, true)} />
+        </Box>
       </Box>
       <Box marginTop={1} flexDirection="row">
         <Text color="claude">{'❯ '}</Text>
@@ -428,6 +439,24 @@ function drawPane(
       {!turn.isRunning && notes.length > 0 && steps.some(step => step.kind === 'say' && step.isAnswer) && (
         <Text dimColor>└ answered on the left</Text>
       )}
+    </Box>
+  )
+}
+
+// Folded: one row naming the turn the pane holds and what its work came to;
+// a press anywhere on it unfolds the pane.
+function drawFolded($: EngineInterface, e: RenderInput<'Pane'>, turns: QaTurn[], turn: QaTurn | undefined) {
+  const { Box, Text, Button } = $.ui.resolve(e)
+  const unfold = () => void setFolded($, e.surface, false)
+  const facts = turn ? [`${turns.findIndex(t => t.id === turn.id) + 1}/${turns.length}`, ...turnFacts(turn)] : []
+  return (
+    <Box flexDirection="row" justifyContent="space-between">
+      <Button key="unfold" plain onPress={unfold}>
+        <Text color="claude">{'▸ '}</Text>
+        <Text>{TITLE}</Text>
+        {facts.length > 0 && <Text dimColor>{` · ${oneLine(facts.join(' · '), Math.max(4, e.props.bodyColumns - 20))}`}</Text>}
+      </Button>
+      <Button key="show" plain hotkey="h" label="show" onPress={unfold} />
     </Box>
   )
 }
@@ -583,15 +612,17 @@ export const register: Register = on => {
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Text } = $.ui.resolve(e)
-    const [turns, pinned, inView, open, mode] = await Promise.all([
+    const [turns, pinned, inView, open, mode, folded] = await Promise.all([
       read($, turnsAtom),
       read($, pinnedAtom),
       read($, inViewAtom),
       read($, openAtom),
       read($, modeAtom),
+      read($, foldedAtom),
     ])
     noteSeat($, e, mode)
     const turn = shownTurn(turns, pinned, inView)
+    if (folded.includes(e.surface)) return drawFolded($, e, turns, turn)
     if (!turn) {
       return <Text dimColor>The work behind each answer shows here: tool calls, the notes between them, thinking.</Text>
     }
