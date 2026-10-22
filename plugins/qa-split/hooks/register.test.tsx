@@ -266,3 +266,17 @@ test('the mods pane turns the split off and on', async ($, on) => {
   await mods.select({ key: 'mods-split', value: 'on' })
   expect((await mods.find({ key: 'mods-split' }))?.props.value).toBe('on')
 })
+
+test('on mobile, which draws no Select, the mods pane switch is two buttons', async ($, on) => {
+  on('ui.render', { component: 'Pane', requestId: 'mod-settings' }, ($: any, e: any) => $.ui.resolve(e).Box({}))
+  await setUp($, on)
+  const mods = await $.ui.mount({ plugin: 'qa-split', surface: 'mobile', component: 'Pane', requestId: 'mod-settings', props: { title: 'Mods', isFocused: true } as any })
+  expect(await mods.find({ key: 'mods-split' })).toBeUndefined()
+  expect((await mods.find({ key: 'mods-split-on' }))?.text).toMatch(/● On/)
+  await mods.press({ key: 'mods-split-off' })
+  expect((await mods.find({ key: 'mods-split-off' }))?.text).toMatch(/● Off/)
+  const note = await $.ui.mount({ plugin: 'qa-split', surface: 'mobile', component: 'AssistantMessage', requestId: NOTE, props: { text: 'Let me read the band code.', isFirstOfReply: true } })
+  expect(await note.find({ type: 'Text', text: 'Let me read the band code.' })).toBeDefined()
+  await mods.press({ key: 'mods-split-on' })
+  expect((await mods.find({ key: 'mods-split-on' }))?.text).toMatch(/● On/)
+})

@@ -641,23 +641,40 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: MODS_PANE }, async ($, e, next) => {
     const drawn = await next(e)
     const mode = await read($, modeAtom)
-    const { Box, Text, Select } = $.ui.resolve(e)
+    const { Box, Text, Button } = $.ui.resolve(e)
+    const value = mode.isOff ? 'off' : 'on'
+    const options = [
+      { value: 'on', label: 'On: tool calls beside the transcript' },
+      { value: 'off', label: 'Off: everything in the transcript' },
+    ]
+    const choose = async (chosen: string) => {
+      if (chosen === 'off') await turnOff($)
+      else await turnOn($)
+    }
+    // The mobile app draws no Select (its table hands out one that draws
+    // nothing): there, and on any surface not known to, each choice is a
+    // button, the one in force marked.
+    let control
+    if (e.surface === 'terminal' || e.surface === 'desktop' || e.surface === 'vscode') {
+      const { Select } = $.ui.resolve(e)
+      control = <Select key="mods-split" label="Details pane" value={value} options={options} onSelect={choose} />
+    } else {
+      control = (
+        <Box flexDirection="column">
+          <Text>Details pane</Text>
+          {options.map(option => (
+            <Button key={`mods-split-${option.value}`} plain dimColor={option.value !== value} onPress={() => void choose(option.value)}>
+              <Text color={option.value === value ? 'claude' : undefined}>{option.value === value ? '● ' : '○ '}</Text>
+              {option.label}
+            </Button>
+          ))}
+        </Box>
+      )
+    }
     const section = (
       <Box flexDirection="column" marginBottom={1}>
         <Text bold>QA split</Text>
-        <Select
-          key="mods-split"
-          label="Details pane"
-          value={mode.isOff ? 'off' : 'on'}
-          options={[
-            { value: 'on', label: 'On: tool calls beside the transcript' },
-            { value: 'off', label: 'Off: everything in the transcript' },
-          ]}
-          onSelect={async value => {
-            if (value === 'off') await turnOff($)
-            else await turnOn($)
-          }}
-        />
+        {control}
       </Box>
     )
     return drawn ? (
