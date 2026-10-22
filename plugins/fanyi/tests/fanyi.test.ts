@@ -443,7 +443,9 @@ const askDialog = ($: any, on: any) => {
   let seen: any = null
   on('ui.render', { component: 'AskUserQuestion' }, async ($: any, e: any) => {
     seen = e.props.questions
-    return $.ui.resolve(e).Text({ children: 'dialog' })
+    // The dialog's tree must hold the engine's own node once (Claude Code 2.1.308 refuses any
+    // other), so the stand-in answers with it
+    return { type: 'engine', ref: 0 }
   })
   return async () => {
     await $.ui.render({ component: 'AskUserQuestion', surface: 'terminal', props: { tool: 'AskUserQuestion', questions: QUESTIONS } } as any)
