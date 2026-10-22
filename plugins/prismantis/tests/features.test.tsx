@@ -2662,7 +2662,7 @@ test('/prismantis setup draws each sample in its own style', async $ => {
   await diffs.unmount()
 })
 
-test('the issue hint rides the first prompt and every tenth, also with diagram hints off', async ($, on) => {
+test('the issue hint rides the first prompt and every tenth, also with diagram hints off', { options: { issueHint: true } }, async ($, on) => {
   const seen: (readonly string[] | undefined)[] = []
   mock.env(on, {})
   on('prompt.submit', (_, e) => {
@@ -2673,7 +2673,7 @@ test('the issue hint rides the first prompt and every tenth, also with diagram h
   expect(seen.map(c => c?.includes(ISSUE_HINT) ?? false)).toEqual([true, false, false, false, false, false, false, false, false, false, true])
 })
 
-test('issueHint off leaves the issue hint out', { options: { issueHint: false } }, async ($, on) => {
+test('the issue hint stays out unless issueHint is on', async ($, on) => {
   const seen: (readonly string[] | undefined)[] = []
   mock.env(on, {})
   on('prompt.submit', (_, e) => {
@@ -2684,7 +2684,7 @@ test('issueHint off leaves the issue hint out', { options: { issueHint: false } 
   expect(seen[0]?.includes(ISSUE_HINT) ?? false).toBe(false)
 })
 
-test('with diagram hints off, the issue hint still goes out alone', { options: { diagramHints: false } }, async ($, on) => {
+test('with diagram hints off, the issue hint still goes out alone', { options: { diagramHints: false, issueHint: true } }, async ($, on) => {
   const seen: (readonly string[] | undefined)[] = []
   mock.env(on, {})
   on('prompt.submit', (_, e) => {

@@ -100,7 +100,7 @@ export const resolveStyle = (options: PluginOptions): Style => {
     fileLinks: null,
     pathLinks: false,
     diagramHints: options.diagramHints !== false && options.mermaid !== false,
-    issueHint: options.issueHint !== false,
+    issueHint: options.issueHint === true,
     rtl,
     reorder: rtl !== 'auto' && rtl !== 'off',
     shape: rtl === 'auto' || rtl === 'off' ? 'visual' : TERMINALS[rtl],
