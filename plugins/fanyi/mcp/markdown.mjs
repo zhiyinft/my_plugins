@@ -1,6 +1,7 @@
 // Splits Markdown into the plain-text pieces a machine translator should see, and puts the
 // translated pieces back. Code blocks, inline code, links' targets, URLs, list markers,
 // headings, quotes and table pipes never reach the translator, so it can't mangle them.
+// Also finds the diagrams a reply draws as pictures, so they can be kept out of translation.
 
 const FENCE = /^\s*(```|~~~)/
 // Leading list markers, task boxes, heading hashes and quote marks, repeated (a quoted list)
@@ -70,6 +71,82 @@ export function splitMarkdown(text) {
       .join('\n')
 
   return { segments, rebuild }
+}
+
+// A fence's opening line: its run of backticks or tildes, then its language, read as prismantis
+// reads it
+const FENCE_OPEN = /^\s*(`{3,}|~{3,})\s*([\w+-]*)/
+// The fenced blocks a renderer such as prismantis draws as pictures: Mermaid diagrams and text
+// figures
+const DIAGRAM = /^(?:mermaid|figure)$/i
+
+// Whether a line closes the fence opened by `run`: the same character, at least as many times
+const closes = (line, run) => {
+  const t = line.trim()
+  return t.length >= run.length && [...t].every((c) => c === run[0])
+}
+
+/**
+ * The diagrams of a Markdown text, as offsets: each runs from its opening fence's line through its
+ * closing one, or to the end when it isn't closed. A fence inside another block is that block's
+ * code, not a diagram.
+ * @param {string} text Markdown
+ * @returns {{ start: number, end: number }[]}
+ */
+export function diagramsOf(text) {
+  const spans = []
+  let open = null
+  let at = 0
+  for (const line of text.split('\n')) {
+    if (open) {
+      if (closes(line, open.run)) {
+        if (open.isDiagram) spans.push({ start: open.start, end: at + line.length })
+        open = null
+      }
+    } else {
+      const m = line.match(FENCE_OPEN)
+      if (m) open = { run: m[1], start: at, isDiagram: DIAGRAM.test(m[2]) }
+    }
+    at += line.length + 1
+  }
+  if (open && open.isDiagram) spans.push({ start: open.start, end: text.length })
+  return spans
+}
+
+/**
+ * A Markdown text with its diagrams held out of translation, each swapped for a placeholder, and
+ * `restore` putting them back into the translation. Once the translation is done, a diagram whose
+ * placeholder it lost is added at its end; while it streams, a placeholder cut short is held back.
+ * @param {string} text Markdown
+ * @returns {{ text: string, restore: (translated: string, isDone?: boolean) => string } | null} null when it has no diagram
+ */
+export function holdDiagrams(text) {
+  const spans = diagramsOf(text)
+  if (!spans.length) return null
+  const diagrams = spans.map(({ start, end }) => text.slice(start, end))
+  let masked = ''
+  let at = 0
+  spans.forEach(({ start, end }, i) => {
+    masked += text.slice(at, start) + placeholder(i)
+    at = end
+  })
+  masked += text.slice(at)
+  const restore = (translated, isDone = true) => {
+    const put = new Set()
+    // Each diagram on lines of its own, wherever the translation moved its placeholder
+    const out = translated.replace(/[ \t]*⟦\s*(\d+)\s*⟧[ \t]*/g, (m, i, offset, s) => {
+      const diagram = diagrams[Number(i)]
+      if (diagram === undefined) return m
+      put.add(Number(i))
+      const before = offset > 0 && s[offset - 1] !== '\n' ? '\n' : ''
+      const after = offset + m.length < s.length && s[offset + m.length] !== '\n' ? '\n' : ''
+      return before + diagram + after
+    })
+    if (!isDone) return out.replace(/⟦\s*\d*\s*$/, '')
+    const lost = diagrams.filter((_, i) => !put.has(i))
+    return lost.length ? [out.trimEnd(), ...lost].join('\n\n') : out
+  }
+  return { text: masked, restore }
 }
 
 /**

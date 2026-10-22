@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import { blockKey } from '../hooks/register.js'
+import { diagramsOf, holdDiagrams } from '../mcp/markdown.mjs'
 
 // The streaming path (session.append → poll → redraw) needs the engine to store rows,
 // which the test kit cannot stand in for, so it is checked in a real session.
@@ -15,8 +16,9 @@ test('a reply block with no translation draws unchanged', { options: { api_key: 
   expect(drawn).toBe('untouched')
 })
 
-// The translator server, stood in for beneath the plugin: `fail` attempts fail first.
-function translator(on: any, { fail = 0, offline = 0, apple = null as any, mergeBatches = false } = {}) {
+// The translator server, stood in for beneath the plugin: `fail` attempts fail first; a reply
+// block's translation is `reply`.
+function translator(on: any, { fail = 0, offline = 0, apple = null as any, mergeBatches = false, reply = '译文：ok' } = {}) {
   const calls: string[] = []
   let failures = fail
   // The server is not connected for its first `offline` connection attempts (a session starting)
@@ -35,6 +37,7 @@ function translator(on: any, { fail = 0, offline = 0, apple = null as any, merge
     ;(calls as any).lastArgs = e.args
     if (down > 0) return { value: { isError: true, content: [{ type: 'text', text: 'no connected MCP tool "' + e.tool + '"' }] } }
     if (e.tool === 'translate_start') {
+      ;(calls as any).startArgs = e.args
       if (failures > 0) { failures--; return { value: { isError: true, content: [{ type: 'text', text: 'HTTP 429 rate limited' }] } } }
       if (/^Already /.test(e.args?.text ?? '')) return { value: { content: [{ type: 'text', text: JSON.stringify({ skipped: true }) }] } }
       return { value: { content: [{ type: 'text', text: JSON.stringify({ job: 'job-' + calls.length }) }] } }
@@ -54,7 +57,7 @@ function translator(on: any, { fail = 0, offline = 0, apple = null as any, merge
       }
       return { value: { content: [{ type: 'text', text: JSON.stringify({ text: 'EN: ' + text }) }] } }
     }
-    if (e.tool === 'translate_poll') return { value: { content: [{ type: 'text', text: JSON.stringify({ text: '译文：' + 'ok', done: true, error: null }) }] } }
+    if (e.tool === 'translate_poll') return { value: { content: [{ type: 'text', text: JSON.stringify({ text: reply, done: true, error: null }) }] } }
     return { value: { isError: true, content: [{ type: 'text', text: 'unexpected ' + e.tool }] } }
   })
   ;(calls as any).logged = logged
@@ -177,7 +180,7 @@ test('the classic layout draws the reply as is, with the translation boxed under
   expect(bilingual).toContain('  译文：ok')
 })
 
-test('the "Translation only" layout draws the translation in the reply\'s place; 译|原 in the badge shows every original, dimmed, and hides them again', { options: { api_key: 'k' } }, async ($, on) => {
+test('the "Translation only" layout draws the translation in the reply\'s place; 译|原 in the badge shows every original, dimmed, above it, and hides them again', { options: { api_key: 'k' } }, async ($, on) => {
   const clock = mock.clock(on)
   translator(on)
   const kept = store(on)
@@ -202,14 +205,15 @@ test('the "Translation only" layout draws the translation in the reply\'s place;
   expect(hidden).not.toContain(text)
   expect(hidden).not.toContain('borderStyle')
   expect(hidden).not.toContain('Button')
-  // One click on the switch shows every original, dimmed, under its translation
+  // One click on the switch shows every original, dimmed, above its translation, with no label
   expect(shows(await band(), '原')).toBe(true)
   await ($.ui as any).press({ plugin: 'fanyi', key: 'fanyi-originals' })
   expect((kept.get('settings') as any).originals).toBe(true)
   const open = JSON.stringify(await draw($, text))
   expect(open.indexOf('● 译文：ok')).toBeGreaterThan(-1)
-  expect(open.indexOf('● 译文：ok')).toBeLessThan(open.indexOf(text))
-  expect(open).toContain('"EN"')
+  expect(open.indexOf(text)).toBeGreaterThan(-1)
+  expect(open.indexOf(text)).toBeLessThan(open.indexOf('● 译文：ok'))
+  expect(open).not.toContain('"EN"')
   // /fanyi original hides them again
   const r: any = await $.command.run({ command: 'fanyi', args: 'original' } as any)
   expect(String(r.text)).toContain('hidden')
@@ -563,4 +567,69 @@ test('text typed as an answer reaches Claude in English; a picked option is sent
   expect(r.result.answers).toEqual({ 'Which one do you want?': 'EN: 我想要第三个', 'Confirm?': 'Yes' })
   await $.ui.render({ component: 'ToolResult', surface: 'terminal', props: { tool_use_id: 'toolu_a', tool: 'AskUserQuestion', output: r.result, isErrored: false } } as any)
   expect(Object.values(seen.answers)).toEqual(['我想要第三个 (EN: 我想要第三个)', 'Yes'])
+})
+
+const FLOW = '```mermaid\nflowchart LR\n  A[Start] --> B[Done]\n```'
+const PICTURE = '```figure\n┌──────┐\n│ Pane │\n└──────┘\n```'
+
+test('the diagrams of a reply are its mermaid and figure blocks, not other code nor a fence quoted in a code block', async () => {
+  const text = 'Before.\n\n' + FLOW + '\n\n```js\nconst a = 1\n```\n\n````markdown\n' + FLOW + '\n````\n\n' + PICTURE + '\n\nAfter.'
+  expect(diagramsOf(text).map(({ start, end }) => text.slice(start, end))).toEqual([FLOW, PICTURE])
+  // One left open runs to the end
+  expect(diagramsOf('Text.\n```mermaid\nflowchart LR')).toEqual([{ start: 6, end: 29 }])
+})
+
+test('diagrams held out of a translation come back as they were, wherever the model put their placeholders', async () => {
+  const text = 'Here is the flow:\n\n' + FLOW + '\n\nThen a picture.\n\n' + PICTURE
+  const held = holdDiagrams(text)!
+  expect(held.text).toBe('Here is the flow:\n\n⟦0⟧\n\nThen a picture.\n\n⟦1⟧')
+  expect(held.restore('流程如下：\n\n⟦0⟧\n\n然后是一张图。\n\n⟦1⟧')).toBe('流程如下：\n\n' + FLOW + '\n\n然后是一张图。\n\n' + PICTURE)
+  // A placeholder moved inline still gets lines of its own
+  expect(held.restore('流程如下：⟦0⟧ 然后是一张图。⟦1⟧')).toBe('流程如下：\n' + FLOW + '\n然后是一张图。\n' + PICTURE)
+  // While streaming, a placeholder cut short is held back; a finished translation that lost one
+  // gets that diagram at its end
+  expect(held.restore('流程如下：\n\n⟦', false)).toBe('流程如下：\n\n')
+  expect(held.restore('流程如下：\n\n⟦0⟧\n\n然后是一张图。')).toBe('流程如下：\n\n' + FLOW + '\n\n然后是一张图。\n\n' + PICTURE)
+  expect(holdDiagrams('No diagram here.\n\n```js\nx()\n```')).toBe(null)
+})
+
+test('a diagram is drawn once: beside the original the translation leaves it out, and translation-only draws it in the translation', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on, { reply: '流程如下：\n\n' + FLOW + '\n\n然后重试。' })
+  store(on)
+  asReply(on)
+  on('ui.render', { component: 'Pane' }, async ($, e) => $.ui.resolve(e).Box({}))
+  const text = 'Here is the flow:\n\n' + FLOW + '\n\nThen it retries.'
+  await append($, text)
+  await draw($, text)
+  await clock.advance(1000)
+  expect((calls as any).startArgs?.diagrams).toBe('keep')
+  const bilingual = JSON.stringify(await draw($, text))
+  expect(bilingual).toContain('流程如下：\\n\\n然后重试。')
+  expect(bilingual.split('flowchart LR').length - 1).toBe(1)
+  await pane($)
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-layout', value: 'translated' })
+  const translated = JSON.stringify(await draw($, text))
+  expect(translated.split('flowchart LR').length - 1).toBe(1)
+  expect(translated).toContain('然后重试。')
+  expect(translated).not.toContain('Then it retries.')
+})
+
+test('with diagrams translated, the translation draws its own diagram beside the original\'s, and the setting reaches the translator', { options: { api_key: 'k' } }, async ($, on) => {
+  const clock = mock.clock(on)
+  const calls = translator(on, { reply: '流程如下：\n\n' + FLOW.replace('Start', '开始') })
+  const kept = store(on)
+  asReply(on)
+  on('ui.render', { component: 'Pane' }, async ($, e) => $.ui.resolve(e).Box({}))
+  expect(shows(await pane($), 'Keep as drawn')).toBe(true)
+  await ($.ui as any).select({ plugin: 'fanyi', key: 'fanyi-diagrams', value: 'translate' })
+  expect((kept.get('settings') as any).diagrams).toBe('translate')
+  const text = 'Here is the flow:\n\n' + FLOW
+  await append($, text)
+  await draw($, text)
+  await clock.advance(1000)
+  expect((calls as any).startArgs?.diagrams).toBe('translate')
+  const drawn = JSON.stringify(await draw($, text))
+  expect(drawn).toContain('A[Start]')
+  expect(drawn).toContain('A[开始]')
 })

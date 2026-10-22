@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { promisify } from 'node:util'
-import { proseOf, splitMarkdown } from './markdown.mjs'
+import { holdDiagrams, proseOf, splitMarkdown } from './markdown.mjs'
 
 const CONFIG_KEY = process.env.FANYI_API_KEY || ''
 const DISABLE_THINKING = process.env.FANYI_DISABLE_THINKING !== 'false'
@@ -22,6 +22,7 @@ const DEFAULTS = {
   engine: 'api',
   language: 'zh-Hans',
   detection: 'device',
+  diagrams: 'keep',
   base_url: process.env.FANYI_BASE_URL || 'https://open.bigmodel.cn/api/coding/paas/v4',
   model: process.env.FANYI_MODEL || 'glm-5.3',
 }
@@ -39,6 +40,8 @@ const SETTINGS = {
   engine: { type: 'string', enum: ['api', 'apple'] },
   language: { type: 'string', description: 'The user language: a BCP 47 tag or a name' },
   detection: { type: 'string', enum: ['device', 'model'] },
+  // keep: diagrams (mermaid, figure) are held out of the API request and come back as they were
+  diagrams: { type: 'string', enum: ['keep', 'translate'] },
   base_url: { type: 'string', description: 'OpenAI-compatible API base URL' },
   model: { type: 'string', description: 'Model id at that API' },
 }
@@ -296,6 +299,9 @@ async function apiKeyStatus() {
 // ---------------------------------------------------------------------------------------------
 // API
 
+// Added to the prompt when the text's diagrams were swapped for placeholders
+const PLACEHOLDER_RULE = 'Keep each placeholder such as ⟦0⟧ exactly as it is, on a line of its own.'
+
 function prompts(lang) {
   const rules = `Keep code, file paths, commands, identifiers and markdown unchanged. Output only the translation. If the text is already written entirely in the target language, output exactly ${SKIP} and nothing else.`
   return {
@@ -340,9 +346,10 @@ async function chat(args, settings, stream) {
   return res
 }
 
-async function request({ text, to, session }, settings, stream) {
-  const system = prompts(describeLanguage(settings.language))[to]
+async function request({ text, to, session, held }, settings, stream) {
+  let system = prompts(describeLanguage(settings.language))[to]
   if (!system) throw new Error('Unsupported direction: ' + to)
+  if (held) system += ' ' + PLACEHOLDER_RULE
   return fetch(baseUrl(settings.base_url) + '/chat/completions', {
     method: 'POST',
     headers: await apiHeaders(session),
@@ -409,20 +416,28 @@ const settingsOf = (args) => ({
   engine: args.engine || DEFAULTS.engine,
   language: args.language || DEFAULTS.language,
   detection: args.detection || DEFAULTS.detection,
+  diagrams: args.diagrams || DEFAULTS.diagrams,
   base_url: args.base_url || DEFAULTS.base_url,
   model: args.model || DEFAULTS.model,
 })
 
+// The text's diagrams held out of an API request, unless the settings say to translate them. The
+// Apple engine keeps every code block, diagrams included, as it is.
+const heldOf = (args, settings) => (settings.engine === 'api' && settings.diagrams !== 'translate' ? holdDiagrams(args.text) : null)
+
 async function translate(args) {
   const settings = settingsOf(args)
   if ((await needsTranslation(args.text, args.to, settings)) === false) return JSON.stringify({ skipped: true })
-  const out = settings.engine === 'apple' ? await translateApple(args, settings) : await translateApi(args, settings)
+  const held = heldOf(args, settings)
+  const raw = settings.engine === 'apple' ? await translateApple(args, settings) : await translateApi(held ? { ...args, text: held.text, held: true } : args, settings)
+  const out = held && raw.trim() !== SKIP ? held.restore(raw) : raw
   // A model asked to judge sometimes copies the text back instead of answering with the marker
   const same = out.trim() === args.text.trim()
   return JSON.stringify(out.trim() === SKIP || same ? { skipped: true } : { text: out })
 }
 
-// Job id → { text, done, error, skipped }
+// Job id → { text, done, error, restore? }: text as the engine returns it, put back together by
+// restore when the diagrams were held out
 const jobs = new Map()
 let nextJob = 1
 
@@ -430,9 +445,10 @@ async function startJob(args) {
   const settings = settingsOf(args)
   if ((await needsTranslation(args.text, args.to, settings)) === false) return JSON.stringify({ skipped: true })
   const id = String(nextJob++)
-  const job = { text: '', done: false, error: null }
+  const held = heldOf(args, settings)
+  const job = { text: '', done: false, error: null, restore: held && held.restore }
   jobs.set(id, job)
-  runJob(job, args, settings)
+  runJob(job, held ? { ...args, text: held.text, held: true } : args, settings)
   return JSON.stringify({ job: id })
 }
 
@@ -456,7 +472,7 @@ function pollJob({ job: id }) {
   const text = job.text.trim()
   if (text === SKIP) return JSON.stringify({ skipped: true, done: job.done, error: null })
   // Text that may still turn out to be the skip marker is held back
-  const shown = SKIP.startsWith(text) ? '' : text
+  const shown = SKIP.startsWith(text) ? '' : job.restore ? job.restore(text, job.done).trim() : text
   return JSON.stringify({ text: shown, done: job.done, error: job.error })
 }
 

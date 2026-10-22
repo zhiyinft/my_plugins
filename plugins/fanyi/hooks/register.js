@@ -9,11 +9,15 @@
 //   by default only its last reply; a translation saved earlier is drawn either way.
 // - Whether a text needs translating is decided by the translator server: by script for a
 //   language not written in Latin script, by the model otherwise.
-// - Settings (on/off, engine, language, layout, detection, on resume) live in the plugin's store and are changed
+// - Diagrams a reply draws as pictures (mermaid, figure) are kept out of translation unless the
+//   "Diagrams" setting says otherwise, and aren't drawn a second time beside their original.
+// - Settings (on/off, engine, language, layout, diagrams, detection, on resume) live in the plugin's store and are changed
 //   from a settings pane (the ⚙ beside the toggle above the prompt, or /fanyi settings).
 //
 // Translation runs in the plugin's own MCP server (mcp/translator.mjs), so the mod
 // itself makes no network requests.
+
+import { diagramsOf } from '../mcp/markdown.mjs'
 
 // Tool names Claude sees for the plugin's translator server
 const TRANSLATOR_TOOL = /^mcp__plugin_.+_translator__/
@@ -112,8 +116,11 @@ const DEFAULT_SETTINGS = {
   // How a reply's translation is drawn: 'bilingual' (right under the reply), 'translated' (in the
   // reply's place) or 'below' (in a box under the reply)
   layout: 'bilingual',
-  // Whether the 'translated' layout shows each original, dimmed, under its translation
+  // Whether the 'translated' layout shows each original, dimmed, above its translation
   originals: false,
+  // Diagrams drawn as pictures (mermaid, figure): 'keep' leaves them out of translation,
+  // 'translate' has their labels translated too
+  diagrams: 'keep',
   base_url: 'https://open.bigmodel.cn/api/coding/paas/v4',
   model: 'glm-5.3',
 }
@@ -165,7 +172,7 @@ async function updateSettings($, change) {
 // The settings the translator server needs with each call
 async function settingArgs($) {
   const s = await getSettings($)
-  return { engine: s.engine, language: s.language, detection: s.detection, base_url: s.base_url, model: s.model }
+  return { engine: s.engine, language: s.language, detection: s.detection, diagrams: s.diagrams, base_url: s.base_url, model: s.model }
 }
 
 // Sets a key and drops the oldest entries past MAX_ENTRIES
@@ -342,6 +349,25 @@ function streamOnce($, text, key, gen) {
 // between tool calls it moves to its own pane. fanyi leaves such a row as drawn, untranslated.
 function isDrawnAway(node) {
   return !!node && node.type === 'Box' && !(node.children && node.children.length)
+}
+
+// A translation as drawn beside its original (the bilingual and classic layouts), without the
+// diagrams the original already draws: one copied as it was, or, while diagrams are kept, any.
+// '' when nothing else is left.
+function besideOriginal(original, translated, diagrams) {
+  const spans = diagramsOf(translated)
+  if (!spans.length) return translated
+  const drawn = new Set(diagramsOf(original).map(({ start, end }) => original.slice(start, end)))
+  let out = ''
+  let at = 0
+  for (const { start, end } of spans) {
+    if (diagrams === 'translate' && !drawn.has(translated.slice(start, end))) continue
+    out += translated.slice(at, start)
+    // The blank lines after it go with it
+    at = end
+    while (translated[at] === '\n') at++
+  }
+  return (out + translated.slice(at)).trim()
 }
 
 // Marks a reply block as already in the user's language: no box, and saved so it isn't checked again
@@ -759,7 +785,7 @@ async function openSettings($) {
   if (!appleCaps) $.clock.after(0, () => loadCapabilities($))
   $.clock.after(0, () => loadKeyStatus($))
   if (!modelList || modelList.error) $.clock.after(0, () => loadModels($))
-  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 24, columns: 64 })
+  await $.ui.open({ id: PANE, title: 'Fanyi settings', focus: true, closeOnEscape: true, rows: 25, columns: 64 })
 }
 
 // Switches the engine, refusing Apple's when this machine can't run it
@@ -835,7 +861,7 @@ export function register(on, options = {}) {
       const s = await getSettings($)
       await updateSettings($, { originals: !s.originals })
       const where = s.layout === 'translated' ? '' : ' They show in the "Translation only" layout; the others always show the original.'
-      return { text: (s.originals ? 'Originals hidden: replies show the translation only.' : 'Originals shown, dimmed, under each translation.') + where }
+      return { text: (s.originals ? 'Originals hidden: replies show the translation only.' : 'Originals shown, dimmed, above each translation.') + where }
     }
     if (arg && arg !== 'on' && arg !== 'off') return { text: 'Usage: /fanyi, /fanyi on, /fanyi off, /fanyi original or /fanyi settings' }
     const value = arg ? arg === 'on' : !(await isEnabled($))
@@ -976,6 +1002,16 @@ export function register(on, options = {}) {
           onSelect: (v) => updateSettings($, { layout: v }),
         }),
         Select({
+          key: 'fanyi-diagrams',
+          label: 'Diagrams',
+          value: s.diagrams,
+          options: [
+            { value: 'keep', label: 'Keep as drawn (mermaid, figure)' },
+            { value: 'translate', label: 'Translate their labels' },
+          ],
+          onSelect: (v) => updateSettings($, { diagrams: v }),
+        }),
+        Select({
           key: 'fanyi-detection',
           label: 'Detection',
           value: s.detection,
@@ -1039,8 +1075,8 @@ export function register(on, options = {}) {
   // its translation, updated as it streams, as the layout setting says:
   // - 'bilingual': the translation right under the reply, drawn beneath as a reply too, so it
   //   looks like one, with a mark (译) in the bullet column in place of the bullet
-  // - 'translated': the translation drawn in the reply's place; with originals switched on (the
-  //   Fanyi line above the prompt, or /fanyi original), the original dimmed under it
+  // - 'translated': the translation drawn in the reply's place; with originals switched on (原 in
+  //   the badge, or /fanyi original), the original dimmed above it, lined up with the reply's text
   // - 'below': a dim rounded box with the translation under the reply, as upstream draws it
   on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
     if (!(await isEnabled($))) return next(e)
@@ -1063,6 +1099,9 @@ export function register(on, options = {}) {
         children: [Box({ width: 2, flexShrink: 0, children: [mark] }), Box({ flexDirection: 'column', flexGrow: 1, children: [body] })],
       })
     const mark = Text({ color: MARK_COLOR, children: replyMark(s.language) })
+    // Beside the original (bilingual, classic), the translation leaves out the diagrams it draws
+    const beside = s.layout === 'translated' ? entry.text : besideOriginal(e.props.text, entry.text, s.diagrams)
+    if (entry.text && !beside) return drawn
     if (s.layout !== 'below') {
       // Until some of it has arrived, the original stands alone with a line saying so
       if (!entry.text) {
@@ -1072,11 +1111,11 @@ export function register(on, options = {}) {
       if (s.layout === 'translated') {
         const translation = await next({ ...e, props: { ...e.props, text: entry.text } })
         if (!s.originals) return translation
-        const original = gutter(Text({ dimColor: true, children: 'EN' }), Markdown({ text: e.props.text, dimColor: true }))
-        return Box({ flexDirection: 'column', children: [translation, original] })
+        const original = Box({ flexDirection: 'column', marginLeft: 2, children: [Markdown({ text: e.props.text, dimColor: true })] })
+        return Box({ flexDirection: 'column', children: [original, translation] })
       }
       // Bilingual: drawn with no bullet, its bullet column left blank, and the mark painted over it
-      const translation = await next({ ...e, props: { ...e.props, text: entry.text, isFirstOfReply: false } })
+      const translation = await next({ ...e, props: { ...e.props, text: beside, isFirstOfReply: false } })
       return Box({
         flexDirection: 'column',
         children: [drawn, Box({ flexDirection: 'column', children: [translation, Box({ position: 'absolute', top: 0, left: 0, children: [mark] })] })],
@@ -1084,8 +1123,8 @@ export function register(on, options = {}) {
     }
     // Below: upstream's box
     const state = entry.done ? '' : entry.retrying ? ' · retrying…' : ' · streaming…'
-    const body = entry.text
-      ? Markdown({ text: entry.text })
+    const body = beside
+      ? Markdown({ text: beside })
       : Text({ dimColor: true, italic: true, children: 'Translating…' })
     return Box({
       flexDirection: 'column',
